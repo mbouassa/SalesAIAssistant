@@ -1,0 +1,30 @@
+# AI Demo Agent - Backend Dependencies
+
+# Web Framework
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+
+# Settings Management
+pydantic==2.6.1
+pydantic-settings==2.2.1
+
+# HTTP Client (for Daily.co API)
+httpx==0.27.0
+
+# Daily.co Python SDK (for AI bot joining calls)
+daily-python==0.10.1
+
+# Speech-to-Text (Deepgram)
+deepgram-sdk>=5.0.0
+
+# LLM (OpenAI)
+openai==1.35.0
+
+# TTS (ElevenLabs)
+elevenlabs==1.5.0
+
+# Audio processing
+numpy==1.26.4
+
+# Development
+python-dotenv==1.0.1
