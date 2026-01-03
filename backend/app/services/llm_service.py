@@ -77,7 +77,7 @@ Be warm, professional, and engaging."""
     def __init__(self):
         settings = get_settings()
         self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self.model = "gpt-4o-mini"
+        self.model = "gpt-4.1-mini"
         self.memory: Optional[MemoryService] = None
         self.browser_enabled = False
         self.page_context: dict = {}

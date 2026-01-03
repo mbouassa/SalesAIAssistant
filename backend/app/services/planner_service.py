@@ -150,76 +150,81 @@ class PlannerService:
     
     # Phase 1: Create a high-level navigation plan based on site_map
     PLAN_PROMPT = """You are a navigation planner for a web app demo.
-Given the user's request and the site structure, create a step-by-step plan.
+Given the user's request, create a step-by-step plan.
+
+YOUR PERSONA:
+- Name: {persona_name}
+- Tone: {persona_tone}
+- Speaking Style: {persona_style}
+- Product: {persona_product}
+
+IMPORTANT: When generating speech, embody this persona fully. Be warm and human, not robotic.
 
 SITE STRUCTURE:
 {site_map}
 
 HOME URL: {home_url}
 
-CURRENT URL: {current_url}
-
 AVAILABLE CLICKABLE ELEMENTS ON THIS PAGE:
 {available_elements}
 
 USER REQUEST: "{user_message}"
 
-Create a plan with numbered steps. Each step should be ONE of:
-- "navigate: <url>" - Go directly to a URL (ONLY use home_url!)
-- "click: <element_text>" - Click a button/link (MUST be in AVAILABLE ELEMENTS!)
-- "speak: <message>" - Say something to the user
+=== CURRENT LOCATION (PRE-CALCULATED - TRUST THIS!) ===
+
+{is_on_home_page}
+
+=== NAVIGATION RULES (CHECK IN THIS ORDER!) ===
+
+RULE 1 - FIRST CHECK: Is the target button in AVAILABLE ELEMENTS?
+→ YES: Click it directly! No navigation needed.
+→ This applies even if you're not on the home page.
+
+RULE 2 - ONLY IF target is NOT in available elements AND it's a home page feature:
+→ Navigate to HOME URL first, THEN click the target button
+→ Plan: speak, navigate to home_url, click target, done
+
+=== PLAN STEPS ===
+
+Each step should be ONE of:
+- "navigate: <url>" - Go to a URL (ONLY use home_url!)
+- "click: <element_text>" - Click a button
+- "speak: <message>" - Say something IN YOUR PERSONA'S VOICE
 - "done" - Plan complete
 
 OUTPUT JSON:
 {{
-    "goal": "What the user wants to achieve",
+    "goal": "What the user wants",
     "target_section": "The section user wants (or null if just a question)",
-    "target_button_found": true | false,
     "plan": [
         {{"step": 1, "action": "speak", "details": "Let me show you!"}},
-        {{"step": 2, "action": "click", "details": "Your Journey"}},
+        {{"step": 2, "action": "click", "details": "Listen Now"}},
         {{"step": 3, "action": "done", "details": null}}
     ],
     "speech_if_no_action": "Response if just a question"
 }}
 
-CRITICAL NAVIGATION LOGIC:
+=== EXAMPLES ===
 
-1. FIRST, check if the target button is in AVAILABLE ELEMENTS:
-   - Look for button_text from SITE STRUCTURE in the available elements
-   - Example: User wants "journaling" → look for "Start Today's Reflection"
+EXAMPLE 1 - Target button IS in available elements (click directly):
+Available: ["Reply", "View 5 replies", "Share a moment..."]
+User: "show me the 5 replies"
+→ "View 5 replies" is in available elements → click it directly!
+→ Plan: speak, click "View 5 replies", done
 
-2. IF target button IS in available elements:
-   → Plan: speak, click it, done
-   
-3. IF target button is NOT in available elements:
-   → Plan: speak, navigate to HOME URL, then click the feature button
-   → This shows the user the full navigation path!
+EXAMPLE 2 - Target button NOT in available elements, need home page:
+Available: ["Reply", "Share a moment...", "Your Journey", "Sister Circle !"]
+User: "show me meditation"
+→ "Listen Now" is NOT in available elements → go to home first
+→ Plan: speak, navigate to home_url, click "Listen Now", done
 
-4. ONLY use "navigate" with the HOME URL - never other URLs!
-   All other navigation must be through clicking.
+EXAMPLE 3 - On home page, user wants meditation:
+Available: ["Start Today's Reflection", "Listen Now", "Sacred Library"]
+→ "Listen Now" is in available elements → click directly
+→ Plan: speak, click "Listen Now", done
 
-5. IMPORTANT - After navigating to HOME URL:
-   - You are ALREADY on the "Your Journey" tab (it's the default view)
-   - Do NOT click "Your Journey" - just click the feature button directly!
-   - Example: navigate to home → click "Sacred Library" (NOT: click "Your Journey" first)
-
-6. Only click "Your Journey" if:
-   - You're currently on "Sister Circle" tab and need to switch
-   - The available elements show community posts (Reply, likes, etc.)
-
-EXAMPLE - User on /reflections page asks "show me meditation":
-{{
-    "goal": "Show the meditation feature",
-    "target_section": "meditation",
-    "target_button_found": false,
-    "plan": [
-        {{"step": 1, "action": "speak", "details": "Sure! Let me take you there."}},
-        {{"step": 2, "action": "navigate", "details": "{home_url}"}},
-        {{"step": 3, "action": "click", "details": "Listen Now"}},
-        {{"step": 4, "action": "done", "details": null}}
-    ]
-}}
+EXAMPLE 4 - Just a conversational question ("How are you?"):
+→ Plan: speak (warm persona response), done
 
 Only output valid JSON."""
 
@@ -271,7 +276,7 @@ Only output valid JSON."""
     def __init__(self):
         settings = get_settings()
         self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self.model = "gpt-4o-mini"
+        self.model = "gpt-4.1-mini"
         self.current_plan = None  # Store active plan
         self.current_plan_step = 0  # Track execution progress
         logger.info("PlannerService initialized")
@@ -316,14 +321,16 @@ Only output valid JSON."""
         page_title: str,
         site_map: list[dict],
         available_elements: list[str] = None,
-        home_url: str = ""
+        home_url: str = "",
+        persona_context: dict = None,
+        is_on_home_page: bool = False
     ) -> dict:
         """
         Phase 1: Create a high-level navigation plan.
         
         Uses simple logic:
-        - If target button is on current page → click directly
-        - If target button is NOT on current page → go to home first, then click through
+        - If is_on_home_page=True → click target directly
+        - If is_on_home_page=False → navigate to home first, then click
         
         Returns:
             dict with 'goal', 'plan' (list of steps), 'speech_if_no_action'
@@ -339,10 +346,24 @@ Only output valid JSON."""
         if not elements_str:
             elements_str = "(no clickable elements found)"
         
+        # Extract persona info (with defaults)
+        persona = persona_context or {}
+        persona_name = persona.get("name", "Demo Assistant")
+        persona_tone = persona.get("tone", "friendly and professional")
+        persona_style = persona.get("speaking_style", "concise and conversational")
+        persona_product = persona.get("product_name", "the product")
+        
+        # Pre-calculated home page status (don't let LLM figure this out)
+        home_status = "YES - You ARE on the home page. Feature buttons are available." if is_on_home_page else "NO - You are NOT on the home page. Navigate to home URL first before clicking feature buttons!"
+        
         prompt = self.PLAN_PROMPT.format(
+            persona_name=persona_name,
+            persona_tone=persona_tone,
+            persona_style=persona_style,
+            persona_product=persona_product,
             site_map=site_map_str,
             home_url=home_url,
-            current_url=current_url,
+            is_on_home_page=home_status,
             available_elements=elements_str,
             user_message=user_message
         )
@@ -350,6 +371,7 @@ Only output valid JSON."""
         logger.info(f"🗺️ Creating navigation plan for: '{user_message}'")
         logger.info(f"📍 Current URL: {current_url}")
         logger.info(f"🏠 Home URL: {home_url}")
+        logger.info(f"🏠 On home page: {is_on_home_page}")
         
         try:
             response = await self.client.chat.completions.create(
@@ -370,7 +392,6 @@ Only output valid JSON."""
             logger.info(f"📋 PLAN CREATED:")
             logger.info(f"   Goal: {result.get('goal', 'unknown')}")
             logger.info(f"   Target: {result.get('target_section')}")
-            logger.info(f"   Button found on page: {result.get('target_button_found', 'unknown')}")
             if result.get('plan'):
                 for step in result['plan']:
                     logger.info(f"   Step {step.get('step')}: {step.get('action')} → {step.get('details')}")

@@ -52,6 +52,7 @@ class Persona:
     demo_outro: str = "Thanks for checking this out! Any questions?"
     site_map: list[dict] = field(default_factory=list)  # Navigation structure for intent-based nav
     home_url: str = ""  # Home/dashboard URL - the only URL needed for navigation
+    home_page_description: str = ""  # Description of home page for LLM-based detection
     
     @classmethod
     def from_yaml(cls, path: Path) -> "Persona":
@@ -124,7 +125,11 @@ class PresenterService:
         
         # Look for persona config in personas directory
         personas_dir = Path(__file__).parent.parent / "personas"
-        persona_file = personas_dir / f"{company_id}.yaml"
+        
+        # Try both naming conventions: persona_{company_id}.yaml and {company_id}.yaml
+        persona_file = personas_dir / f"persona_{company_id}.yaml"
+        if not persona_file.exists():
+            persona_file = personas_dir / f"{company_id}.yaml"
         
         if persona_file.exists():
             return Persona.from_yaml(persona_file)

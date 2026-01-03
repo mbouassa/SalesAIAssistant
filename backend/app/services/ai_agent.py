@@ -485,13 +485,34 @@ class AIAgent:
             print(f"[Agent] 📍 Current URL: {current_url}", flush=True)
             print(f"[Agent] 📍 Available elements: {available_actions[:5]}...", flush=True)
             
+            # Build persona context for Planner to use in speech generation
+            persona_context = {
+                "name": self.presenter.persona.name,
+                "tone": self.presenter.persona.tone,
+                "speaking_style": self.presenter.persona.speaking_style,
+                "product_name": self.presenter.persona.product_name,
+            }
+            
+            # Get home page description for LLM-based detection
+            home_page_description = getattr(self.presenter.persona, 'home_page_description', '')
+            
+            # Use LLM to check if we're on home page (compares page content to description)
+            is_on_home_page = await self._check_if_on_home_page(
+                page_text=page_text,
+                home_page_description=home_page_description
+            )
+            
+            print(f"[Agent] 🏠 Home page check (LLM): {is_on_home_page}", flush=True)
+            
             nav_plan = await self.planner.create_navigation_plan(
                 user_message=user_message,
                 current_url=current_url,
                 page_title=page_title,
                 site_map=site_map,
                 available_elements=available_actions,
-                home_url=home_url
+                home_url=home_url,
+                persona_context=persona_context,
+                is_on_home_page=is_on_home_page
             )
             
             # Check if there are any ACTION steps (click, navigate_to, navigate) in the plan
@@ -504,13 +525,29 @@ class AIAgent:
             # If no action steps, just respond (pure question)
             if not has_action_steps:
                 print(f"[Agent] 💬 No actions in plan - just responding", flush=True)
-                response_text = nav_plan.get('speech_if_no_action', '')
+                
+                # 1. First, look for 'speak' step in the plan (Planner's generated speech)
+                response_text = ""
+                for step in plan_steps:
+                    if step.get('action') == 'speak' and step.get('details'):
+                        response_text = step.get('details')
+                        print(f"[Agent] 💬 Using Planner's speech from plan", flush=True)
+                        break
+                
+                # 2. If no speak step, try speech_if_no_action field
                 if not response_text:
-                    # Generate speech using presenter
+                    response_text = nav_plan.get('speech_if_no_action', '')
+                    if response_text:
+                        print(f"[Agent] 💬 Using speech_if_no_action field", flush=True)
+                
+                # 3. Last resort: generate with Presenter
+                if not response_text:
+                    print(f"[Agent] 💬 Generating with Presenter (fallback)", flush=True)
                     response_text = await self.presenter.generate_response(
                         user_input=user_message,
                         conversation_history=history
                     )
+                
                 await self._speak(response_text)
                 if self.llm.memory:
                     await self.llm.memory.add_message("user", user_message)
@@ -730,6 +767,57 @@ class AIAgent:
             conversation_history=history
         )
     
+    async def _check_if_on_home_page(
+        self,
+        page_text: str,
+        home_page_description: str
+    ) -> bool:
+        """
+        Use LLM to determine if we're on the home page by comparing
+        current page content to the home page description.
+        
+        Returns:
+            bool: True if on home page, False otherwise
+        """
+        if not home_page_description:
+            # No description provided, assume we're on home page
+            return True
+        
+        from openai import AsyncOpenAI
+        settings = get_settings()
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        
+        prompt = f"""Compare the current page content to the home page description and determine if we're on the home page.
+
+HOME PAGE DESCRIPTION:
+{home_page_description}
+
+CURRENT PAGE CONTENT:
+{page_text[:1500]}
+
+Question: Based on the content, is the user currently on the home page described above?
+
+Answer with ONLY "yes" or "no" (lowercase, nothing else)."""
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0.0
+            )
+            
+            answer = response.choices[0].message.content.strip().lower()
+            is_home = answer == "yes"
+            
+            print(f"[Agent] 🏠 LLM home check: '{answer}' → {is_home}", flush=True)
+            return is_home
+            
+        except Exception as e:
+            print(f"[Agent] ⚠️ Home page check failed: {e}", flush=True)
+            # On error, assume we're on home page to avoid unnecessary navigation
+            return True
+    
     async def _check_needs_follow_up(
         self, 
         user_message: str, 
@@ -771,7 +859,7 @@ Only output valid JSON."""
 
         try:
             response = await client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4.1-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=100,
                 temperature=0.1,
@@ -1079,7 +1167,7 @@ Rules:
 Answer with just the element text:"""
 
             response = await client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4.1-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=50,
                 temperature=0

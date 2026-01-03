@@ -390,7 +390,7 @@ Rules:
 Answer with just the element text:"""
 
             response = await client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4.1-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=50,
                 temperature=0
@@ -537,7 +537,7 @@ Answer with only YES or NO:"""
 
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt.format(message=user_message)}],
             max_tokens=5,
             temperature=0

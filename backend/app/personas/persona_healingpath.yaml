@@ -50,6 +50,20 @@ demo_outro: "That's the core of the Journey: simple practices, real support, and
 # All other navigation happens through clicking from here
 home_url: "https://healing-path.vercel.app/dashboard"
 
+# HOME PAGE DESCRIPTION - Used by LLM to determine if we're on the home page
+# The AI compares the current page's content to this description
+home_page_description: |
+  The home page (Your Journey tab) displays:
+  - A weekly affirmation/focus message at the top
+  - "Your Journey" and "Sister Circle" navigation tabs
+  - Three main feature cards with action buttons:
+    1. Journaling section with "Start Today's Reflection" button
+    2. Audio meditation section showing "12 min" with "Listen Now" button
+    3. Healing booklet section showing "8 pages" with "Sacred Library" button
+  - Week 1 focus content with "Gentle Prompt" and "Reflection Question"
+  
+  If you see community posts, replies, "Share a moment" input, or like counts instead of these feature cards, you are NOT on the home page - you're on the Sister Circle tab.
+
 # Site structure - helps AI understand what buttons lead where
 # No URLs needed per section - AI will click through from home
 site_map:
