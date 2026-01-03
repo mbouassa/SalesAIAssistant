@@ -504,6 +504,11 @@ class AIAgent:
             
             print(f"[Agent] 🏠 Home page check (LLM): {is_on_home_page}", flush=True)
             
+            # Detect current screen for context-aware responses
+            screen_context = await self._detect_current_screen(page_text)
+            if screen_context:
+                print(f"[Agent] 🖥️ Screen context: {screen_context.get('name', 'unknown')}", flush=True)
+            
             nav_plan = await self.planner.create_navigation_plan(
                 user_message=user_message,
                 current_url=current_url,
@@ -545,7 +550,8 @@ class AIAgent:
                     print(f"[Agent] 💬 Generating with Presenter (fallback)", flush=True)
                     response_text = await self.presenter.generate_response(
                         user_input=user_message,
-                        conversation_history=history
+                        conversation_history=history,
+                        screen_context=screen_context
                     )
                 
                 await self._speak(response_text)
@@ -695,11 +701,18 @@ class AIAgent:
             
             # Final response if we haven't spoken yet
             if not first_speech_done:
+                # Refresh screen context after navigation
+                if self.browser_session:
+                    fresh_page = await self.browser_session.get_page_content()
+                    fresh_text = fresh_page.get('text_content', '') if fresh_page else ''
+                    screen_context = await self._detect_current_screen(fresh_text)
+                
                 # Generate a completion message
                 final_speech = await self.presenter.generate_response(
                     user_input=user_message,
                     action_result=f"Navigated to {target_section}",
-                    conversation_history=history
+                    conversation_history=history,
+                    screen_context=screen_context
                 )
                 await self._speak(final_speech)
             
@@ -714,6 +727,11 @@ class AIAgent:
                 self.presenter.update_page_context(page_context)
                 page_text = page_context.get('text_content', '')[:800]
                 
+                # Refresh screen context for the new page
+                screen_context = await self._detect_current_screen(page_text)
+                if screen_context:
+                    print(f"[Agent] 🖥️ New screen: {screen_context.get('name', 'unknown')}", flush=True)
+                
                 # Ask LLM if user needs a follow-up response
                 follow_up = await self._check_needs_follow_up(
                     user_message=user_message,
@@ -724,11 +742,12 @@ class AIAgent:
                 if follow_up and follow_up.get('needs_response'):
                     print(f"[Agent] 📝 LLM says: respond about '{follow_up.get('topic', target_section)}'", flush=True)
                     
-                    # Generate contextual response using Presenter
+                    # Generate contextual response using Presenter with screen context
                     explanation = await self.presenter.generate_response(
                         user_input=user_message,
                         action_result=f"Now showing the {target_section} section",
-                        conversation_history=history
+                        conversation_history=history,
+                        screen_context=screen_context
                     )
                     
                     if explanation:
@@ -758,13 +777,15 @@ class AIAgent:
         user_message: str, 
         history: list, 
         plan: Plan,
-        action_result: Optional[str] = None
+        action_result: Optional[str] = None,
+        screen_context: Optional[dict] = None
     ) -> str:
         """Generate speech using the Presenter."""
         return await self.presenter.generate_response(
             user_input=user_message,
             action_result=action_result,
-            conversation_history=history
+            conversation_history=history,
+            screen_context=screen_context
         )
     
     async def _check_if_on_home_page(
@@ -873,6 +894,70 @@ Only output valid JSON."""
         except Exception as e:
             print(f"[Agent] Follow-up check error: {e}", flush=True)
             return {"needs_response": False}
+    
+    async def _detect_current_screen(self, page_text: str) -> Optional[dict]:
+        """
+        Use LLM to detect which screen the user is currently on by matching
+        page content against the persona's screen descriptions.
+        
+        Returns:
+            dict with screen info (id, name, description, purpose, key_actions) or None
+        """
+        # Get screens from persona
+        screens = getattr(self.presenter.persona, 'screens', {})
+        if not screens:
+            print("[Agent] No screens defined in persona, skipping screen detection", flush=True)
+            return None
+        
+        # Build screen descriptions for LLM
+        screen_descriptions = []
+        for screen_id, screen_info in screens.items():
+            name = screen_info.get('name', screen_id)
+            desc = screen_info.get('description', '')
+            screen_descriptions.append(f"- {screen_id}: {name}\n  {desc[:200]}...")
+        
+        from openai import AsyncOpenAI
+        settings = get_settings()
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        
+        prompt = f"""Based on the current page content, determine which screen the user is viewing.
+
+AVAILABLE SCREENS:
+{chr(10).join(screen_descriptions)}
+
+CURRENT PAGE CONTENT:
+{page_text[:1500]}
+
+Which screen ID best matches the current page content?
+Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") or "unknown" if none match."""
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=20,
+                temperature=0.0
+            )
+            
+            screen_id = response.choices[0].message.content.strip().lower()
+            print(f"[Agent] 🖥️ Detected screen: '{screen_id}'", flush=True)
+            
+            if screen_id in screens:
+                screen_info = screens[screen_id]
+                return {
+                    "id": screen_id,
+                    "name": screen_info.get('name', screen_id),
+                    "description": screen_info.get('description', ''),
+                    "purpose": screen_info.get('purpose', ''),
+                    "key_actions": screen_info.get('key_actions', [])
+                }
+            else:
+                print(f"[Agent] Screen '{screen_id}' not found in persona screens", flush=True)
+                return None
+                
+        except Exception as e:
+            print(f"[Agent] ⚠️ Screen detection failed: {e}", flush=True)
+            return None
     
     async def _speak(self, text: str) -> None:
         """Convert text to speech and play it."""
@@ -1053,11 +1138,12 @@ Only output valid JSON."""
         
         print(f"[Agent] 🎬 Starting playbook: {self.playbook.name}", flush=True)
         
-        # Create the demo runner with callbacks
+        # Create the demo runner with callbacks and persona for dynamic narration
         self.demo_runner = DemoRunner(
             browser_session=self.browser_session,
             speak_callback=self._speak,
-            check_interrupted=lambda: not self.is_speaking or not self.is_running
+            check_interrupted=lambda: not self.is_speaking or not self.is_running,
+            persona=self.presenter.persona
         )
         
         try:

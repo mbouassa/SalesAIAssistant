@@ -102,3 +102,76 @@ site_map:
 # Navigation logic:
 # - If target button is on current page → click it directly
 # - If target button is NOT on current page → go to home_url first, then click through
+
+# =============================================================================
+# SCREEN DESCRIPTIONS
+# Used for: demo narration, answering questions, understanding context
+# =============================================================================
+screens:
+  dashboard:
+    name: "Your Journey (Home)"
+    description: |
+      The main dashboard showing this week's healing focus. Features a weekly affirmation 
+      at the top ("I am healing at my own pace, and that is enough"), two navigation tabs 
+      (Your Journey and Sister Circle), and three feature cards:
+      - Gentle Prompt: Daily journaling with "Start Today's Reflection" button
+      - Audio Session: 12-minute guided meditation with "Listen Now" button  
+      - Healing Booklet: 8-page weekly guide with "Sacred Library" button
+      Also shows Week 1 Focus progress and available content.
+    purpose: "Your daily home base - everything organized by your healing rhythm"
+    key_actions: ["Start Today's Reflection", "Listen Now", "Sacred Library", "Sister Circle"]
+    
+  sister_circle:
+    name: "Sister Circle (Community)"
+    description: |
+      A warm community space where thousands of women share their healing stories. 
+      Shows a count of sisters healing together (12,847+), a "What's on your heart today?" 
+      input to share moments, and posts from other members with likes and replies.
+      Example post: Sarah M. sharing about crying during meditation and feeling lighter.
+      Each post shows engagement (likes, replies) and you can view/add replies.
+    purpose: "Connect with sisters on the same journey - your breakthrough might help someone else"
+    key_actions: ["Share a moment", "Reply", "View replies", "Your Journey"]
+    
+  journaling:
+    name: "Sacred Reflections (Journaling)"
+    description: |
+      The journaling hub showing today's sacred invitation - a reflection question like
+      "What makes you feel emotionally safe today—and did you have that growing up?"
+      Features a "Begin Today's Sacred Reflection" button, a weekly journey calendar 
+      (Monday-Sunday) showing completed/missed/locked days, and recent reflections history.
+      Each day has a theme: Meeting Your Inner Child, Healing Old Wounds, Self-Compassion, etc.
+    purpose: "Your safe space to journal and reflect on your healing journey"
+    key_actions: ["Begin Today's Sacred Reflection", "View past reflections"]
+    
+  journaling_active:
+    name: "Your Sacred Space (Writing)"
+    description: |
+      The actual writing space - a peaceful sanctuary with today's prompt displayed 
+      (e.g., "What does your deepest wisdom want you to know?"). Shows gentle invitation 
+      questions to guide reflection, a large text area for free writing, word count,
+      auto-save indicator, and buttons to "Continue Later" or "Complete Sacred Reflection".
+      Header says "This is your sacred sanctuary. Let your heart speak freely."
+    purpose: "Let your soul whisper its truth - no right or wrong way to heal"
+    key_actions: ["Write freely", "Continue Later", "Complete Sacred Reflection"]
+    
+  meditation:
+    name: "Audio Sessions (Meditation)"
+    description: |
+      This week's sacred meditation invitation. Features a main guided meditation card
+      ("Guided Inner Child Meditation" - 3 minutes) with a description: "A soft and 
+      nurturing meditation to help you reconnect with the younger version of yourself."
+      Has a "Begin Your Sacred Journey" play button and shows Your Audio Library below
+      with available sessions. More sessions unlock as you progress.
+    purpose: "Create space for healing with guided meditations crafted with love"
+    key_actions: ["Begin Your Sacred Journey", "Play meditation"]
+    
+  booklets:
+    name: "Sacred Library (Healing Guides)"
+    description: |
+      Beautiful, printable healing guides to support the journey. Shows this week's 
+      featured booklet (e.g., "You're Not Too Much: A Healing Guide for People Who 
+      Feel Like a Burden" - 9 pages, printable). Has a "Begin Your Sacred Journey" 
+      download button and Your Healing Library showing available guides.
+      Guides are designed to be printed and kept close to your heart.
+    purpose: "Offline resources you can revisit anytime - download, print, keep close"
+    key_actions: ["Begin Your Sacred Journey", "Download guide"]

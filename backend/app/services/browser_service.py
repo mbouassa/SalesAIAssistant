@@ -254,8 +254,8 @@ class BrowserService:
         """Create a new Browserbase session for a room."""
         print(f"[Browser] Creating session for room: {room_name}", flush=True)
         
-        # Create Browserbase session
-        session = self.client.sessions.create(project_id=self.project_id)
+        # Create Browserbase session with 30 minute timeout
+        session = self.client.sessions.create(project_id=self.project_id, timeout=1800)
         
         # Get debug URLs for live view
         debug_info = self.client.sessions.debug(session.id)

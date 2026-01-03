@@ -53,6 +53,7 @@ class Persona:
     site_map: list[dict] = field(default_factory=list)  # Navigation structure for intent-based nav
     home_url: str = ""  # Home/dashboard URL - the only URL needed for navigation
     home_page_description: str = ""  # Description of home page for LLM-based detection
+    screens: dict = field(default_factory=dict)  # Detailed screen descriptions for demos/conversations
     
     @classmethod
     def from_yaml(cls, path: Path) -> "Persona":
@@ -183,30 +184,13 @@ class PresenterService:
                 prompt_parts.append(f"  - {prop}")
             prompt_parts.append("")
         
-        # Add current page context
+        # Add minimal page location context (URL/title only - curated screen context is passed separately)
         if self.current_page_state:
-            prompt_parts.append("CURRENT PAGE STATE:")
-            prompt_parts.append(f"  URL: {self.current_page_state.get('url', 'Unknown')}")
-            prompt_parts.append(f"  Title: {self.current_page_state.get('title', 'Unknown')}")
-            
-            # Add visible sections
-            sections = self.current_page_state.get("sections", [])
-            if sections:
-                prompt_parts.append("  Visible sections:")
-                for section in sections[:5]:  # Limit to 5
-                    heading = section.get("heading", "")
-                    if heading:
-                        prompt_parts.append(f"    - {heading}")
-            
-            # Add clickable elements
-            clickables = self.current_page_state.get("clickable_elements", [])
-            if clickables:
-                prompt_parts.append("  Available actions (buttons/links):")
-                for el in clickables[:10]:  # Limit to 10
-                    text = el.get("text", el.get("aria_label", ""))
-                    if text:
-                        prompt_parts.append(f"    - {text}")
-            prompt_parts.append("")
+            url = self.current_page_state.get('url', '')
+            title = self.current_page_state.get('title', '')
+            if url or title:
+                prompt_parts.append(f"Current location: {title or url}")
+                prompt_parts.append("")
         
         # Add demo state context
         prompt_parts.append(f"Demo stage: {self.demo_stage}")
@@ -254,7 +238,8 @@ class PresenterService:
         self,
         user_input: str,
         action_result: Optional[str] = None,
-        conversation_history: Optional[list[dict]] = None
+        conversation_history: Optional[list[dict]] = None,
+        screen_context: Optional[dict] = None
     ) -> str:
         """
         Generate a contextual response to user input.
@@ -263,6 +248,7 @@ class PresenterService:
             user_input: What the user said (transcribed)
             action_result: Result of any action just performed (e.g., "scrolled down")
             conversation_history: Previous messages for context
+            screen_context: Current screen info (id, name, description, purpose, key_actions)
             
         Returns:
             Natural language response for TTS
@@ -274,6 +260,23 @@ class PresenterService:
         
         # Build context for LLM
         context_parts = []
+        
+        # Add screen context if available (from LLM detection)
+        if screen_context:
+            screen_name = screen_context.get('name', 'current screen')
+            screen_desc = screen_context.get('description', '')
+            screen_purpose = screen_context.get('purpose', '')
+            key_actions = screen_context.get('key_actions', [])
+            
+            context_parts.append(f"CURRENT SCREEN: {screen_name}")
+            if screen_desc:
+                context_parts.append(f"What's on screen: {screen_desc[:300]}")
+            if screen_purpose:
+                context_parts.append(f"Purpose: {screen_purpose}")
+            if key_actions:
+                context_parts.append(f"Available actions: {', '.join(key_actions)}")
+            context_parts.append("")  # Blank line for readability
+            logger.debug(f"Screen context: {screen_name}")
         
         if action_result:
             context_parts.append(f"You just performed this action: {action_result}")

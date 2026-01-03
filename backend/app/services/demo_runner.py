@@ -50,7 +50,9 @@ class PlaybookStep:
     """A single step in a demo playbook."""
     id: str
     action: dict
-    narrate: str = ""
+    narrate: str = ""  # Legacy: hardcoded narration
+    narrate_intent: str = ""  # New: intent for LLM to generate narration
+    screen: str = ""  # Screen ID to get context from persona.screens
     success: Optional[dict] = None
     fallbacks: list = field(default_factory=list)
 
@@ -88,6 +90,8 @@ class Playbook:
                 id=step_data.get("id", "unknown"),
                 action=action,
                 narrate=step_data.get("narrate", ""),
+                narrate_intent=step_data.get("narrate_intent", ""),
+                screen=step_data.get("screen", ""),
                 success=step_data.get("success"),
                 fallbacks=fallbacks
             )
@@ -124,6 +128,7 @@ class DemoRunner:
         browser_session: BrowserSession,
         speak_callback: Callable[[str], Awaitable[None]],
         check_interrupted: Callable[[], bool],
+        persona: Optional[dict] = None,
     ):
         """
         Initialize the demo runner.
@@ -132,17 +137,24 @@ class DemoRunner:
             browser_session: Active Browserbase session for browser control
             speak_callback: Async function to speak text (calls TTS)
             check_interrupted: Function that returns True if user interrupted
+            persona: Persona object with screens, tone, etc. for dynamic narration
         """
         self.browser = browser_session
         self.speak = speak_callback
         self.check_interrupted = check_interrupted
+        self.persona = persona
+        
+        # Extract screen descriptions if persona available
+        self.screens = {}
+        if persona and hasattr(persona, 'screens'):
+            self.screens = persona.screens or {}
         
         self.state = DemoState.IDLE
         self.current_playbook: Optional[Playbook] = None
         self.current_step_index = 0
         self.steps_completed = 0
         
-        logger.info("DemoRunner initialized")
+        logger.info(f"DemoRunner initialized (screens: {len(self.screens)})")
     
     async def run_playbook(self, playbook: Playbook) -> bool:
         """
@@ -192,8 +204,8 @@ class DemoRunner:
                 
                 self.steps_completed += 1
                 
-                # Small pause between steps for natural pacing
-                await asyncio.sleep(0.5)
+                # Brief pause between steps
+                await asyncio.sleep(0.2)
             
             self.state = DemoState.COMPLETED
             logger.info(f"✓ Playbook completed: {self.steps_completed}/{len(playbook.steps)} steps")
@@ -214,10 +226,11 @@ class DemoRunner:
         # Execute the action
         action_success = await self._perform_action(action_type, action, step.fallbacks)
         
-        # Narrate if there's narration for this step
-        if step.narrate:
-            logger.debug(f"Narrating: {step.narrate[:50]}...")
-            await self.speak(step.narrate)
+        # Generate and speak narration
+        narration = await self._get_narration(step)
+        if narration:
+            logger.debug(f"Narrating: {narration[:50]}...")
+            await self.speak(narration)
         
         # Validate success condition if specified
         if step.success:
@@ -227,6 +240,72 @@ class DemoRunner:
                 return False
         
         return action_success
+    
+    async def _get_narration(self, step: PlaybookStep) -> str:
+        """Get narration for a step - either hardcoded or LLM-generated."""
+        # If there's hardcoded narration, use it
+        if step.narrate:
+            return step.narrate
+        
+        # If there's a narrate_intent, generate with LLM
+        if step.narrate_intent:
+            return await self._generate_narration(step.narrate_intent, step.screen)
+        
+        return ""
+    
+    async def _generate_narration(self, intent: str, screen_id: str) -> str:
+        """Generate narration using LLM based on intent and screen context."""
+        from openai import AsyncOpenAI
+        from app.core.config import get_settings
+        
+        settings = get_settings()
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        
+        # Get screen context if available
+        screen_context = ""
+        if screen_id and self.screens.get(screen_id):
+            screen_info = self.screens[screen_id]
+            screen_name = screen_info.get('name', screen_id)
+            screen_desc = screen_info.get('description', '')
+            screen_purpose = screen_info.get('purpose', '')
+            screen_context = f"\nSCREEN: {screen_name}\nDESCRIPTION: {screen_desc}\nPURPOSE: {screen_purpose}"
+        
+        # Get persona context
+        persona_name = "Maya"
+        persona_tone = "warm, grounded, and encouraging"
+        if self.persona:
+            persona_name = getattr(self.persona, 'name', 'Maya')
+            persona_tone = getattr(self.persona, 'tone', 'warm and encouraging')
+        
+        prompt = f"""Generate a brief, warm narration for a product demo.
+
+PERSONA: {persona_name}
+TONE: {persona_tone}
+{screen_context}
+
+INTENT: {intent}
+
+Generate 1-2 sentences of natural, conversational narration. Be warm but concise. 
+Don't be overly enthusiastic or salesy. Speak like a friend showing something they love.
+
+Output ONLY the narration text, nothing else."""
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=100,
+                temperature=0.7
+            )
+            
+            narration = response.choices[0].message.content.strip()
+            logger.debug(f"Generated narration: {narration[:50]}...")
+            return narration
+            
+        except Exception as e:
+            logger.error(f"Failed to generate narration: {e}")
+            # Fallback to a simple version of the intent
+            return f"Let me show you {intent}."
     
     async def _perform_action(
         self, 
@@ -279,7 +358,7 @@ class DemoRunner:
             if url:
                 logger.debug(f"Navigating to: {url}")
                 await self.browser.navigate(url)
-                await asyncio.sleep(1)  # Wait for page load
+                await asyncio.sleep(0.5)  # Brief wait for page load
                 return True
             return False
         
@@ -287,7 +366,7 @@ class DemoRunner:
             logger.debug("Going back in browser history")
             try:
                 await self.browser.page.go_back()
-                await asyncio.sleep(1)  # Wait for page load
+                await asyncio.sleep(0.5)  # Brief wait for page load
                 return True
             except Exception as e:
                 logger.warning(f"Go back failed: {e}")
@@ -298,17 +377,26 @@ class DemoRunner:
             return True  # Don't fail on unknown actions
     
     async def _try_click_direct(self, target: str) -> bool:
-        """Try to click an element by exact text match."""
+        """Try to click an element by text - uses smart_click first, then selectors."""
         if not target:
             return False
         
-        # Try different selector strategies
+        # Try smart_click first (DOM-based, more robust)
+        if hasattr(self.browser, 'smart_click'):
+            try:
+                if await self.browser.smart_click(target):
+                    logger.debug(f"✓ Smart clicked: {target}")
+                    await asyncio.sleep(0.3)  # Brief wait for UI
+                    return True
+            except Exception:
+                pass
+        
+        # Fallback to selector strategies
         selectors = [
             f"button:has-text('{target}')",
             f"a:has-text('{target}')",
             f"[role='button']:has-text('{target}')",
             f"[role='tab']:has-text('{target}')",
-            f"div:has-text('{target}')",
             f"text='{target}'",
         ]
         
@@ -317,9 +405,9 @@ class DemoRunner:
                 success = await self.browser.click(selector)
                 if success:
                     logger.debug(f"✓ Clicked: {target}")
-                    await asyncio.sleep(0.5)  # Wait for UI to respond
+                    await asyncio.sleep(0.3)  # Brief wait for UI
                     return True
-            except Exception as e:
+            except Exception:
                 continue
         
         return False
