@@ -192,6 +192,15 @@ Each step should be ONE of:
 - "speak: <message>" - Say something IN YOUR PERSONA'S VOICE
 - "done" - Plan complete
 
+=== CRITICAL: SPEECH RULES ===
+
+PRE-NAVIGATION SPEECH (before navigate/click):
+- Keep it SHORT! Just acknowledge and indicate you're navigating.
+- Examples: "Of course, let me take you there." / "Sure, I'll show you that." / "Absolutely, one moment."
+- Do NOT explain the feature yet - you'll do that after arriving.
+
+POST-NAVIGATION speech happens automatically after navigation - don't include it in the plan.
+
 OUTPUT JSON:
 {{
     "goal": "What the user wants",
@@ -276,7 +285,7 @@ Only output valid JSON."""
     def __init__(self):
         settings = get_settings()
         self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self.model = "gpt-4.1-mini"
+        self.model = "gpt-4.1"  # Use full model for better rule-following
         self.current_plan = None  # Store active plan
         self.current_plan_step = 0  # Track execution progress
         logger.info("PlannerService initialized")

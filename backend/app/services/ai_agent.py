@@ -522,37 +522,73 @@ class AIAgent:
             
             # Check if there are any ACTION steps (click, navigate_to, navigate) in the plan
             plan_steps = nav_plan.get('plan', [])
+            target_section_raw = nav_plan.get('target_section')
+            target_section = (target_section_raw or '').lower()  # Handle None
             has_action_steps = any(
                 step.get('action') in ['click', 'navigate_to', 'navigate'] 
                 for step in plan_steps
             )
             
+            # === NEW: Check if already on the target screen ===
+            current_screen_id = screen_context.get('id', '').lower() if screen_context else ''
+            already_on_target = False
+            
+            if current_screen_id and target_section:
+                # Normalize both: remove underscores, spaces, hyphens for comparison
+                def normalize(s: str) -> str:
+                    return s.replace('_', '').replace(' ', '').replace('-', '').lower()
+                
+                current_normalized = normalize(current_screen_id)
+                target_normalized = normalize(target_section)
+                
+                # Fuzzy match: check if normalized strings match or contain each other
+                already_on_target = (
+                    current_normalized == target_normalized or
+                    current_normalized in target_normalized or 
+                    target_normalized in current_normalized
+                )
+                
+                if already_on_target and has_action_steps:
+                    print(f"[Agent] 🎯 Already on target screen '{current_screen_id}' - skipping navigation!", flush=True)
+                    has_action_steps = False  # Treat as "no navigation needed"
+            
             # If no action steps, just respond (pure question)
             if not has_action_steps:
                 print(f"[Agent] 💬 No actions in plan - just responding", flush=True)
                 
-                # 1. First, look for 'speak' step in the plan (Planner's generated speech)
                 response_text = ""
-                for step in plan_steps:
-                    if step.get('action') == 'speak' and step.get('details'):
-                        response_text = step.get('details')
-                        print(f"[Agent] 💬 Using Planner's speech from plan", flush=True)
-                        break
                 
-                # 2. If no speak step, try speech_if_no_action field
-                if not response_text:
-                    response_text = nav_plan.get('speech_if_no_action', '')
-                    if response_text:
-                        print(f"[Agent] 💬 Using speech_if_no_action field", flush=True)
-                
-                # 3. Last resort: generate with Presenter
-                if not response_text:
-                    print(f"[Agent] 💬 Generating with Presenter (fallback)", flush=True)
+                # If we skipped navigation because already on target, generate fresh response
+                # (don't use Planner's pre-nav speech like "let me take you there")
+                if already_on_target:
+                    print(f"[Agent] 💬 Already on target - generating contextual response", flush=True)
                     response_text = await self.presenter.generate_response(
                         user_input=user_message,
                         conversation_history=history,
                         screen_context=screen_context
                     )
+                else:
+                    # 1. First, look for 'speak' step in the plan (Planner's generated speech)
+                    for step in plan_steps:
+                        if step.get('action') == 'speak' and step.get('details'):
+                            response_text = step.get('details')
+                            print(f"[Agent] 💬 Using Planner's speech from plan", flush=True)
+                            break
+                    
+                    # 2. If no speak step, try speech_if_no_action field
+                    if not response_text:
+                        response_text = nav_plan.get('speech_if_no_action', '')
+                        if response_text:
+                            print(f"[Agent] 💬 Using speech_if_no_action field", flush=True)
+                    
+                    # 3. Last resort: generate with Presenter
+                    if not response_text:
+                        print(f"[Agent] 💬 Generating with Presenter (fallback)", flush=True)
+                        response_text = await self.presenter.generate_response(
+                            user_input=user_message,
+                            conversation_history=history,
+                            screen_context=screen_context
+                        )
                 
                 await self._speak(response_text)
                 if self.llm.memory:
@@ -707,12 +743,13 @@ class AIAgent:
                     fresh_text = fresh_page.get('text_content', '') if fresh_page else ''
                     screen_context = await self._detect_current_screen(fresh_text)
                 
-                # Generate a completion message
+                # Generate a completion message (this is after navigation, so it's a continuation)
                 final_speech = await self.presenter.generate_response(
                     user_input=user_message,
                     action_result=f"Navigated to {target_section}",
                     conversation_history=history,
-                    screen_context=screen_context
+                    screen_context=screen_context,
+                    is_continuation=True  # We've navigated, now explain
                 )
                 await self._speak(final_speech)
             
@@ -742,12 +779,13 @@ class AIAgent:
                 if follow_up and follow_up.get('needs_response'):
                     print(f"[Agent] 📝 LLM says: respond about '{follow_up.get('topic', target_section)}'", flush=True)
                     
-                    # Generate contextual response using Presenter with screen context
+                    # Generate contextual response as a CONTINUATION (not a fresh response)
                     explanation = await self.presenter.generate_response(
                         user_input=user_message,
                         action_result=f"Now showing the {target_section} section",
                         conversation_history=history,
-                        screen_context=screen_context
+                        screen_context=screen_context,
+                        is_continuation=True  # Don't start with "Sure!" - we already acknowledged
                     )
                     
                     if explanation:
@@ -778,14 +816,16 @@ class AIAgent:
         history: list, 
         plan: Plan,
         action_result: Optional[str] = None,
-        screen_context: Optional[dict] = None
+        screen_context: Optional[dict] = None,
+        is_continuation: bool = False
     ) -> str:
         """Generate speech using the Presenter."""
         return await self.presenter.generate_response(
             user_input=user_message,
             action_result=action_result,
             conversation_history=history,
-            screen_context=screen_context
+            screen_context=screen_context,
+            is_continuation=is_continuation
         )
     
     async def _check_if_on_home_page(
@@ -1137,6 +1177,18 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
             return
         
         print(f"[Agent] 🎬 Starting playbook: {self.playbook.name}", flush=True)
+        
+        # Navigate to home page first (demo should always start from home)
+        home_url = getattr(self.presenter.persona, 'home_url', '')
+        if home_url:
+            print(f"[Agent] 🏠 Navigating to home page before demo: {home_url}", flush=True)
+            await self._speak("Sure! Let me give you a quick tour. One moment while I take you to the home page.")
+            success = await self.browser_session.navigate(home_url)
+            if success:
+                await asyncio.sleep(2.0)  # Wait for page to load
+                print(f"[Agent] ✓ Now on home page, starting demo", flush=True)
+            else:
+                print(f"[Agent] ⚠️ Could not navigate to home, starting demo anyway", flush=True)
         
         # Create the demo runner with callbacks and persona for dynamic narration
         self.demo_runner = DemoRunner(

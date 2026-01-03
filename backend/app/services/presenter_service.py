@@ -239,7 +239,8 @@ class PresenterService:
         user_input: str,
         action_result: Optional[str] = None,
         conversation_history: Optional[list[dict]] = None,
-        screen_context: Optional[dict] = None
+        screen_context: Optional[dict] = None,
+        is_continuation: bool = False
     ) -> str:
         """
         Generate a contextual response to user input.
@@ -249,6 +250,7 @@ class PresenterService:
             action_result: Result of any action just performed (e.g., "scrolled down")
             conversation_history: Previous messages for context
             screen_context: Current screen info (id, name, description, purpose, key_actions)
+            is_continuation: If True, this is a follow-up after navigation (don't start with "Sure!")
             
         Returns:
             Natural language response for TTS
@@ -260,6 +262,13 @@ class PresenterService:
         
         # Build context for LLM
         context_parts = []
+        
+        # Handle continuation mode (post-navigation explanation)
+        if is_continuation:
+            context_parts.append("IMPORTANT: You already acknowledged the user's request and navigated here.")
+            context_parts.append("Now describe what's on screen as a NATURAL CONTINUATION.")
+            context_parts.append("Start with something like 'So here we are...' or 'This is where...' - NOT 'Sure!' or 'Of course!'")
+            context_parts.append("")
         
         # Add screen context if available (from LLM detection)
         if screen_context:

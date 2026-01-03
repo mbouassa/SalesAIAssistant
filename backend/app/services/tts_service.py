@@ -15,7 +15,7 @@ class TTSService:
         settings = get_settings()
         self.client = AsyncElevenLabs(api_key=settings.elevenlabs_api_key)
         # "Aria" - expressive, natural female voice from ElevenLabs
-        self.voice_id = "9BWtsMINqrJLrRacOk9x"  # Aria
+        self.voice_id = "UgBBYS2sOqTuMpoF3BR0"  # From ElevenLabs voice library
         self.model_id = "eleven_multilingual_v2"  # Best quality, most natural
     
     async def synthesize(self, text: str) -> bytes:
