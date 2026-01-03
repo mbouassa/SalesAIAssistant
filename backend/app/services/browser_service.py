@@ -41,16 +41,109 @@ class BrowserSession:
         await self.page.goto(self.product_url, wait_until="domcontentloaded")
         print(f"[Browser] Navigated to: {self.product_url}", flush=True)
     
-    async def click(self, selector: str) -> bool:
-        """Click an element on the page."""
+    async def click(self, selector: str, timeout: int = 1500) -> bool:
+        """Click an element on the page. Fast timeout for quick fallback."""
         if not self.page:
             return False
         try:
-            await self.page.click(selector, timeout=5000)
+            await self.page.click(selector, timeout=timeout)
             print(f"[Browser] Clicked: {selector}", flush=True)
             return True
         except Exception as e:
-            print(f"[Browser] Click failed: {e}", flush=True)
+            # Don't log full error for timeout - too verbose
+            if "Timeout" in str(e):
+                pass  # Silent fail for timeout, we'll try next selector
+            else:
+                print(f"[Browser] Click failed: {e}", flush=True)
+            return False
+    
+    async def smart_click(self, text: str, timeout: int = 2000) -> bool:
+        """
+        Smart click using Playwright's built-in locators.
+        These are designed to find the right clickable element automatically.
+        """
+        if not self.page:
+            return False
+        
+        try:
+            # Strategy 1: getByRole with name (best for buttons/links with text)
+            # This finds buttons, links, etc. by their accessible name
+            for role in ['button', 'link', 'menuitem', 'tab']:
+                try:
+                    locator = self.page.get_by_role(role, name=text, exact=False)
+                    if await locator.count() > 0:
+                        await locator.first.click(timeout=timeout)
+                        print(f"[Browser] Clicked {role} '{text}'", flush=True)
+                        return True
+                except Exception:
+                    pass
+            
+            # Strategy 2: getByText (finds any element with this text)
+            try:
+                locator = self.page.get_by_text(text, exact=False)
+                if await locator.count() > 0:
+                    # Click the first visible one
+                    await locator.first.click(timeout=timeout)
+                    print(f"[Browser] Clicked text '{text}'", flush=True)
+                    return True
+            except Exception:
+                pass
+            
+            # Strategy 3: Find by text and click nearest clickable ancestor
+            try:
+                result = await self.page.evaluate("""
+                    (targetText) => {
+                        // Find smallest element containing the exact text
+                        const walker = document.createTreeWalker(
+                            document.body,
+                            NodeFilter.SHOW_TEXT,
+                            null,
+                            false
+                        );
+                        
+                        let node;
+                        while (node = walker.nextNode()) {
+                            if (node.textContent.toLowerCase().includes(targetText.toLowerCase())) {
+                                // Found text node, now find clickable parent
+                                let el = node.parentElement;
+                                let maxDepth = 5; // Don't go more than 5 levels up
+                                
+                                while (el && maxDepth > 0) {
+                                    const tag = el.tagName.toLowerCase();
+                                    const role = el.getAttribute('role');
+                                    const hasClick = el.onclick || el.getAttribute('onclick');
+                                    const cursor = window.getComputedStyle(el).cursor;
+                                    
+                                    // Check if this element is clickable
+                                    if (tag === 'button' || tag === 'a' || 
+                                        role === 'button' || hasClick || cursor === 'pointer') {
+                                        el.click();
+                                        return { 
+                                            success: true, 
+                                            tag: tag,
+                                            text: el.innerText?.slice(0, 30) 
+                                        };
+                                    }
+                                    
+                                    el = el.parentElement;
+                                    maxDepth--;
+                                }
+                            }
+                        }
+                        return { success: false };
+                    }
+                """, text)
+                
+                if result and result.get('success'):
+                    print(f"[Browser] JS clicked <{result.get('tag')}> '{result.get('text')}'", flush=True)
+                    return True
+            except Exception:
+                pass
+            
+            return False
+                
+        except Exception as e:
+            print(f"[Browser] Smart click error: {e}", flush=True)
             return False
     
     async def scroll(self, direction: str = "down", amount: int = 300) -> bool:
@@ -91,11 +184,12 @@ class BrowserSession:
             return False
     
     async def get_page_content(self) -> dict:
-        """Get page title, text content, and clickable elements."""
+        """Get page URL, title, text content, and clickable elements."""
         if not self.page:
             return {}
         
         try:
+            url = self.page.url  # Get current URL
             title = await self.page.title()
             
             # Get main text content
@@ -106,17 +200,22 @@ class BrowserSession:
                 }
             """)
             
-            # Get clickable elements (buttons, links)
+            # Get clickable elements (buttons, links, icons with click handlers)
             clickables = await self.page.evaluate("""
                 () => {
                     const elements = [];
-                    const buttons = document.querySelectorAll('button, a, [role="button"]');
+                    const buttons = document.querySelectorAll('button, a, [role="button"], [onclick], svg[role="img"]');
                     buttons.forEach((el, i) => {
-                        if (i < 20 && el.innerText.trim()) {
-                            elements.push({
-                                text: el.innerText.trim().slice(0, 50),
-                                tag: el.tagName.toLowerCase()
-                            });
+                        if (i < 30) {
+                            let text = el.innerText?.trim() || el.getAttribute('aria-label') || el.getAttribute('title') || '';
+                            // Sanitize: replace newlines/tabs with space, collapse multiple spaces
+                            text = text.replace(/[\\n\\r\\t]+/g, ' ').replace(/\\s+/g, ' ').trim();
+                            if (text) {
+                                elements.push({
+                                    text: text.slice(0, 50),
+                                    tag: el.tagName.toLowerCase()
+                                });
+                            }
                         }
                     });
                     return elements;
@@ -124,6 +223,7 @@ class BrowserSession:
             """)
             
             return {
+                "url": url,
                 "title": title,
                 "text_content": text_content,
                 "clickable_elements": clickables

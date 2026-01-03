@@ -1,0 +1,154 @@
+# Healing Path Demo Playbook
+# Full guided tour of The Inner Child Journey platform
+
+meta:
+  company_id: "persona_healingpath"
+  name: "Full Healing Path Demo"
+  description: "Walk through the core features: journaling, meditation, booklets, and community"
+  estimated_duration: "3-4 minutes"
+  start_url: "https://healing-path.vercel.app/dashboard"
+
+# Trigger phrases that activate this playbook
+triggers:
+  - "give me a demo"
+  - "show me everything"
+  - "full tour"
+  - "walk me through"
+  - "show me how it works"
+
+# Demo steps - executed in sequence
+steps:
+  # === STEP 1: Dashboard Overview ===
+  - id: "dashboard_overview"
+    action:
+      type: "wait"
+      duration: 1
+    narrate: "Welcome to the dashboard! This is your daily home base. You'll see everything organized by your healing rhythm — journaling, meditation, and community all in one place."
+    # No success check needed - we're already on the page
+
+  # === STEP 2: Navigate to Gentle Prompt ===
+  - id: "open_gentle_prompt"
+    action:
+      type: "click"
+      target: "Start Today's Reflection"
+      intent: "the journaling or reflection feature"
+      fallbacks:
+        - "Gentle Prompt"
+        - "Daily Journaling"
+        - "Journal"
+    narrate: "Let's start with the Gentle Prompt — this is your daily journaling practice. It only takes about 5 minutes."
+
+  # === STEP 3: Show the journaling screen ===
+  - id: "describe_journaling"
+    action:
+      type: "wait"
+      duration: 2
+    narrate: "Each day you get a new reflection prompt designed to quiet your inner critic. You can write as little or as much as you need — there's no pressure."
+
+  # === STEP 4: Click Begin Sacred Reflection ===
+  - id: "start_reflection"
+    action:
+      type: "click"
+      target: "Start Today's Reflection"
+      intent: "begin or start the reflection"
+      fallbacks:
+        - "Begin Today's Sacred Reflection"
+        - "Begin Reflection"
+        - "Start"
+    narrate: "Let me show you what happens when you start a reflection..."
+
+  # === STEP 5: Walk through reflection screen ===
+  - id: "reflection_walkthrough"
+    action:
+      type: "scroll"
+      target: "down"
+    narrate: "Here you can write freely. The prompts are gentle and designed to help you reconnect with your inner child. When you're done, it's saved privately for you to revisit anytime."
+
+  # === STEP 6: Return to Dashboard ===
+  - id: "return_to_dashboard_1"
+    action:
+      type: "go_back"
+    narrate: "Let me take you back to the dashboard to show you the other features."
+
+  # === STEP 7: Navigate to Audio Session ===
+  - id: "open_audio_session"
+    action:
+      type: "click"
+      target: "Listen Now"
+      intent: "the audio or meditation feature"
+      fallbacks:
+        - "Audio Session"
+        - "Weekly Meditation"
+        - "Meditation"
+    narrate: "Now let's look at the Audio Sessions — these are guided meditations you can do weekly, or whenever you need to regulate."
+
+  # === STEP 8: Describe meditation feature ===
+  - id: "describe_meditation"
+    action:
+      type: "wait"
+      duration: 2
+    narrate: "Each meditation is about 10-15 minutes. They're designed to help you feel grounded and reconnect with yourself. Most members do these 2-3 times a week."
+
+  # === STEP 9: Return to Dashboard for Booklet ===
+  - id: "return_to_dashboard_2"
+    action:
+      type: "go_back"
+    narrate: "Let me show you one more thing on the dashboard."
+
+  # === STEP 10: Navigate to Healing Booklet ===
+  - id: "open_booklet"
+    action:
+      type: "click"
+      target: "Sacred Library"
+      intent: "the booklet or library feature"
+      fallbacks:
+        - "Healing Booklet"
+        - "Booklet"
+        - "Resources"
+    narrate: "And here's something special — the Healing Booklets. These are beautiful printable guides you can use offline."
+
+  # === STEP 11: Describe booklet ===
+  - id: "describe_booklet"
+    action:
+      type: "wait"
+      duration: 2
+    narrate: "You can print these out, journal by hand, or just keep them as a reference. Many members love having something physical to hold onto."
+
+  # === STEP 12: Return to Dashboard for Sister Circle ===
+  - id: "return_to_dashboard_3"
+    action:
+      type: "go_back"
+    narrate: "Now let me show you the community feature."
+
+  # === STEP 13: Navigate to Sister Circle tab ===
+  - id: "open_sister_circle"
+    action:
+      type: "click"
+      target: "Sister Circle"
+      intent: "the community or sister circle tab"
+      fallbacks:
+        - "Community"
+        - "Sacred Circle"
+        - "Circle"
+    narrate: "Finally, this is the Sister Circle — our private community space."
+
+  # === STEP 13: Describe community ===
+  - id: "describe_community"
+    action:
+      type: "scroll"
+      target: "down"
+    narrate: "Here you can share your journey, read what others are going through, and get real support. It's a safe, judgment-free space."
+
+  # === STEP 14: Closing ===
+  - id: "demo_complete"
+    action:
+      type: "wait"
+      duration: 1
+    narrate: "That's the core of The Inner Child Journey — simple daily practices, calming meditations, beautiful resources, and a supportive community. What questions do you have?"
+
+# What to say if demo fails or gets stuck
+fallback_narration:
+  action_failed: "Hmm, that didn't work as expected. Let me try something else."
+  element_not_found: "I'm having trouble finding that section. Let me describe it for you instead."
+  demo_interrupted: "Got it — I'll pause the demo. What would you like to focus on?"
+

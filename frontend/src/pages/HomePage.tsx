@@ -2,11 +2,19 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { roomsApi } from '../services/api'
 
+// Available company personas (add more as needed)
+const COMPANIES = [
+  { id: '', name: 'Default AI' },
+  { id: 'persona_tenex', name: 'Tenex' },
+  { id: 'persona_healingpath', name: 'Healing Path' },
+]
+
 export default function HomePage() {
   const navigate = useNavigate()
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [productUrl, setProductUrl] = useState('')
+  const [companyId, setCompanyId] = useState('')
 
   const handleCreateRoom = async () => {
     setIsCreating(true)
@@ -17,6 +25,7 @@ export default function HomePage() {
         privacy: 'private',
         expires_in_minutes: 60,
         product_url: productUrl.trim() || undefined,
+        company_id: companyId || undefined,
       })
       
       // Store browser_live_url in sessionStorage for the room
@@ -82,6 +91,28 @@ export default function HomePage() {
               />
               <p className="text-xs text-gray-600 mt-2">
                 The AI will control and demo this product page live
+              </p>
+            </div>
+
+            {/* Company Persona Dropdown */}
+            <div className="mb-6">
+              <label className="block text-sm text-gray-400 mb-2">
+                AI Persona
+              </label>
+              <select
+                value={companyId}
+                onChange={(e) => setCompanyId(e.target.value)}
+                className="w-full px-5 py-4 rounded-xl bg-white/5 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500/50 transition-all appearance-none cursor-pointer"
+                style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236b7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '1.5rem' }}
+              >
+                {COMPANIES.map((company) => (
+                  <option key={company.id} value={company.id} className="bg-gray-900">
+                    {company.name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-600 mt-2">
+                Select a company to customize the AI's persona and product knowledge
               </p>
             </div>
 

@@ -6,6 +6,7 @@ Pipeline: Daily Audio → Flux STT → Custom LLM → TTS → Daily Audio
 """
 
 import asyncio
+import re
 import threading
 from typing import Optional
 from daily import Daily, CallClient, VirtualSpeakerDevice, VirtualMicrophoneDevice, EventHandler
@@ -27,6 +28,9 @@ from deepgram.extensions.types.sockets import ListenV2SocketClientResponse
 from app.services.llm_service import LLMService
 from app.services.tts_service import TTSService
 from app.services.browser_service import browser_service, BrowserSession
+from app.services.presenter_service import PresenterService
+from app.services.planner_service import PlannerService, Plan
+from app.services.demo_runner import DemoRunner, load_playbook, matches_trigger, is_demo_request, DemoState
 from app.core.config import get_settings
 
 
@@ -69,13 +73,21 @@ class AIAgent:
     
     SAMPLE_RATE = 16000  # 16kHz for Flux
     
-    def __init__(self):
+    def __init__(self, company_id: Optional[str] = None):
         settings = get_settings()
+        
+        # Company persona
+        self.company_id = company_id
         
         # Services
         self.llm = LLMService()
         self.tts = TTSService()
+        self.presenter = PresenterService(company_id=company_id)
+        self.planner = PlannerService()
         self.deepgram = AsyncDeepgramClient(api_key=settings.deepgram_api_key)
+        
+        print(f"[Agent] Initialized with persona: {self.presenter.persona.name} ({self.presenter.persona.company})", flush=True)
+        print(f"[Agent] Planner service ready", flush=True)
         
         # Daily client
         self.client: Optional[CallClient] = None
@@ -91,6 +103,19 @@ class AIAgent:
         
         # Browser session (if product demo)
         self.browser_session: Optional[BrowserSession] = None
+        
+        # Demo runner (for scripted playbooks)
+        self.demo_runner: Optional[DemoRunner] = None
+        if company_id:
+            print(f"[Agent] Looking for playbook for: {company_id}", flush=True)
+            self.playbook = load_playbook(company_id)
+            if self.playbook:
+                print(f"[Agent] 📚 Playbook loaded: {self.playbook.name} ({len(self.playbook.steps)} steps)", flush=True)
+                print(f"[Agent] 📚 Triggers: {self.playbook.triggers}", flush=True)
+            else:
+                print(f"[Agent] ⚠️ No playbook found for {company_id}", flush=True)
+        else:
+            self.playbook = None
         
         # Transcript queue for async processing
         self._transcript_queue: asyncio.Queue = asyncio.Queue()
@@ -405,56 +430,284 @@ class AIAgent:
                     print(f"[Agent] Transcript processing error: {e}")
     
     async def _respond(self, user_message: str) -> None:
-        """Generate and speak a response."""
+        """Generate and speak a response, potentially with browser actions."""
         self.is_speaking = True
         
         try:
             print(f"[Agent] 💬 Responding to: '{user_message}'")
             
-            # Get LLM response
-            response_text = await self.llm.get_response(user_message)
-            print(f"[Agent] 🤖 Response: '{response_text}'")
-            
-            # Convert to speech
-            audio_data = await self.tts.synthesize(response_text)
-            print(f"[Agent] 🔊 Generated {len(audio_data)} bytes of audio", flush=True)
-            
-            # Send audio via VirtualMicrophoneDevice (publishes as regular mic track)
-            if self.mic and audio_data:
-                print(f"[Agent] 📤 Streaming {len(audio_data)} bytes...", flush=True)
-                
-                def write_audio_sync():
-                    """Write audio - blocking mic handles pacing internally."""
-                    # Use larger chunks (100ms) for smoother playback
-                    # 100ms = 1600 samples = 3200 bytes at 16kHz 16-bit
-                    chunk_ms = 100
-                    samples_per_chunk = int(self.SAMPLE_RATE * (chunk_ms / 1000.0))  # 1600
-                    chunk_bytes = samples_per_chunk * 2  # 3200 bytes
+            # === CHECK FOR PLAYBOOK TRIGGER ===
+            if self.playbook and self.browser_session:
+                # Quick keyword check first (fast)
+                if matches_trigger(user_message, self.playbook):
+                    # Confirm with LLM (more accurate)
+                    from openai import AsyncOpenAI
+                    from app.core.config import get_settings
+                    settings = get_settings()
+                    client = AsyncOpenAI(api_key=settings.openai_api_key)
                     
-                    chunks_sent = 0
-                    interrupted = False
-                    for i in range(0, len(audio_data), chunk_bytes):
-                        # Stop if user interrupted (barge-in) or agent is shutting down
-                        if not self.is_speaking or not self.is_running:
-                            interrupted = True
-                            break
-                        chunk = audio_data[i:i + chunk_bytes]
-                        try:
-                            # Blocking mic handles real-time pacing internally
-                            self.mic.write_frames(chunk)
-                            chunks_sent += 1
-                        except Exception as e:
-                            print(f"[Agent] ❌ Audio write error: {e}", flush=True)
-                            break
-                    return (chunks_sent, interrupted)
+                    if await is_demo_request(user_message, client):
+                        print(f"[Agent] 🎬 Playbook triggered: {self.playbook.name}", flush=True)
+                        await self._run_playbook()
+                        return
+                    else:
+                        print(f"[Agent] Demo keyword detected but LLM said not a demo request", flush=True)
+            
+            # Get current page context if we have a browser
+            page_context = None
+            available_actions = []
+            if self.browser_session:
+                try:
+                    page_context = await self.browser_session.get_page_content()
+                    self.presenter.update_page_context(page_context)
+                    
+                    # Extract clickable element texts for planner
+                    clickables = page_context.get("clickable_elements", [])
+                    available_actions = [el.get("text", "") for el in clickables if el.get("text")]
+                except Exception as e:
+                    print(f"[Agent] Could not update page context: {e}", flush=True)
+            
+            # Get conversation history from memory
+            history = self.llm.memory.get_messages_for_llm() if self.llm.memory else []
+            
+            # Get site_map and home_url from persona for navigation
+            site_map = self.presenter.persona.site_map if hasattr(self.presenter.persona, 'site_map') else []
+            home_url = self.presenter.persona.home_url if hasattr(self.presenter.persona, 'home_url') else ''
+            
+            # Get page info
+            current_url = page_context.get('url', '') if page_context else ''
+            page_title = page_context.get('title', '') if page_context else ''
+            page_text = page_context.get('text_content', '') if page_context else ''
+            
+            # === PHASE 1: CREATE NAVIGATION PLAN ===
+            print(f"\n{'='*60}", flush=True)
+            print(f"[Agent] 🗺️ PHASE 1: Creating navigation plan...", flush=True)
+            print(f"[Agent] 📍 Current URL: {current_url}", flush=True)
+            print(f"[Agent] 📍 Available elements: {available_actions[:5]}...", flush=True)
+            
+            nav_plan = await self.planner.create_navigation_plan(
+                user_message=user_message,
+                current_url=current_url,
+                page_title=page_title,
+                site_map=site_map,
+                available_elements=available_actions,
+                home_url=home_url
+            )
+            
+            # Check if there are any ACTION steps (click, navigate_to, navigate) in the plan
+            plan_steps = nav_plan.get('plan', [])
+            has_action_steps = any(
+                step.get('action') in ['click', 'navigate_to', 'navigate'] 
+                for step in plan_steps
+            )
+            
+            # If no action steps, just respond (pure question)
+            if not has_action_steps:
+                print(f"[Agent] 💬 No actions in plan - just responding", flush=True)
+                response_text = nav_plan.get('speech_if_no_action', '')
+                if not response_text:
+                    # Generate speech using presenter
+                    response_text = await self.presenter.generate_response(
+                        user_input=user_message,
+                        conversation_history=history
+                    )
+                await self._speak(response_text)
+                if self.llm.memory:
+                    await self.llm.memory.add_message("user", user_message)
+                    await self.llm.memory.add_message("assistant", response_text)
+                return
+            
+            # === PHASE 2: EXECUTE PLAN STEP BY STEP ===
+            print(f"\n{'='*60}", flush=True)
+            print(f"[Agent] 🚀 PHASE 2: Executing plan step-by-step...", flush=True)
+            
+            plan_steps = nav_plan.get('plan', [])
+            target_section = nav_plan.get('target_section', '')
+            first_speech_done = False
+            final_speech = ""
+            
+            for step in plan_steps:
+                step_num = step.get('step', 0)
+                step_action = step.get('action', '')
+                step_details = step.get('details', '')
                 
-                chunks_sent, interrupted = await asyncio.to_thread(write_audio_sync)
-                if interrupted:
-                    print(f"[Agent] ⏹️ Speech interrupted after {chunks_sent} chunks", flush=True)
+                print(f"\n[Agent] ▶️ Step {step_num}: {step_action} → {step_details}", flush=True)
+                
+                # Handle special actions
+                if step_action == "done":
+                    print(f"[Agent] ✅ Plan complete!", flush=True)
+                    break
+                
+                if step_action == "speak":
+                    if not first_speech_done:
+                        await self._speak(step_details)
+                        first_speech_done = True
+                        final_speech = step_details
+                    continue
+                
+                # Handle navigate action (direct URL navigation)
+                if step_action == "navigate":
+                    print(f"[Agent] 🌐 Navigating to: {step_details}", flush=True)
+                    if self.browser_session:
+                        success = await self.browser_session.navigate(step_details)
+                        if success:
+                            print(f"[Agent] ✅ Navigated to '{step_details}'", flush=True)
+                            print(f"[Agent] ⏳ Waiting 2s for page to fully load...", flush=True)
+                            await asyncio.sleep(2.0)  # Wait for page to fully load before clicking
+                        else:
+                            print(f"[Agent] ❌ Failed to navigate to '{step_details}'", flush=True)
+                    continue
+                
+                # Handle direct click action from planner (clicks element by name)
+                if step_action == "click":
+                    # Wait a moment for page to be ready before clicking
+                    await asyncio.sleep(1.0)
+                    print(f"[Agent] 🖱️ Direct click: '{step_details}'", flush=True)
+                    success = await self._browser_click(step_details)
+                    if success:
+                        print(f"[Agent] ✅ Clicked '{step_details}'", flush=True)
+                        await asyncio.sleep(1.0)  # Wait for navigation after click
+                    else:
+                        print(f"[Agent] ❌ Failed to click '{step_details}'", flush=True)
+                    continue
+                
+                # Get fresh page context before each action
+                if self.browser_session:
+                    await asyncio.sleep(0.5)  # Let page settle
+                    page_context = await self.browser_session.get_page_content()
+                    current_url = page_context.get('url', '')
+                    page_title = page_context.get('title', '')
+                    page_text = page_context.get('text_content', '')
+                    clickables = page_context.get("clickable_elements", [])
+                    available_actions = [el.get("text", "") for el in clickables if el.get("text")]
+                    
+                    print(f"[Agent] 📍 Now at: {current_url}", flush=True)
+                    print(f"[Agent] 🔘 Elements: {available_actions[:5]}...", flush=True)
+                
+                # Execute the step
+                execution = await self.planner.execute_plan_step(
+                    plan_step=step,
+                    target_section=target_section,
+                    current_url=current_url,
+                    page_title=page_title,
+                    clickable_elements=available_actions,
+                    page_text=page_text[:500]
+                )
+                
+                action_type = execution.get('action_type', 'none')
+                element = execution.get('element_to_click', '')
+                nav_url = execution.get('url', '')
+                
+                print(f"[Agent] 🎯 Executing: {action_type} → {element or nav_url or 'N/A'}", flush=True)
+                
+                # Execute navigate action (direct URL)
+                if action_type == "navigate" and nav_url:
+                    print(f"[Agent] 🌐 Navigating to: {nav_url}", flush=True)
+                    if self.browser_session:
+                        success = await self.browser_session.navigate(nav_url)
+                        if success:
+                            print(f"[Agent] ✅ Navigated to '{nav_url}'", flush=True)
+                            print(f"[Agent] ⏳ Waiting 2s for page to fully load...", flush=True)
+                            await asyncio.sleep(2.0)  # Wait for page to fully load
+                        else:
+                            print(f"[Agent] ❌ Failed to navigate to '{nav_url}'", flush=True)
+                    continue
+                
+                # Execute the action
+                if action_type == "click" and element:
+                    success = await self._browser_click(element)
+                    if success:
+                        print(f"[Agent] ✅ Clicked '{element}'", flush=True)
+                        await asyncio.sleep(1.0)  # Wait for page to load
+                    else:
+                        print(f"[Agent] ❌ Failed to click '{element}'", flush=True)
+                        # Try fallback
+                        fallback = execution.get('fallback_action', 'none')
+                        if fallback == "go_back":
+                            await self.browser_session.page.go_back()
+                            await asyncio.sleep(1.0)
+                        elif fallback == "scroll_down":
+                            await self.browser_session.scroll("down")
+                            await asyncio.sleep(0.5)
+                
+                elif action_type == "go_back":
+                    # Check if on dashboard - don't go back from there!
+                    if "/dashboard" in current_url:
+                        print(f"[Agent] ⚠️ On dashboard, can't go back (would go to login). Scrolling up instead.", flush=True)
+                        await self.browser_session.scroll("up")
+                        await asyncio.sleep(0.5)
+                    else:
+                        try:
+                            await self.browser_session.page.go_back()
+                            print(f"[Agent] ✅ Went back", flush=True)
+                            await asyncio.sleep(1.0)
+                        except Exception as e:
+                            print(f"[Agent] ❌ Go back failed: {e}", flush=True)
+                
+                elif action_type == "scroll_up":
+                    await self.browser_session.scroll("up")
+                    print(f"[Agent] ✅ Scrolled up", flush=True)
+                    await asyncio.sleep(0.5)
+                
+                elif action_type == "speak":
+                    speech = execution.get('speech', step_details)
+                    if speech and not first_speech_done:
+                        await self._speak(speech)
+                        first_speech_done = True
+                        final_speech = speech
+            
+            # Final response if we haven't spoken yet
+            if not first_speech_done:
+                # Generate a completion message
+                final_speech = await self.presenter.generate_response(
+                    user_input=user_message,
+                    action_result=f"Navigated to {target_section}",
+                    conversation_history=history
+                )
+                await self._speak(final_speech)
+            
+            # === PHASE 3: POST-NAVIGATION RESPONSE ===
+            # Ask LLM if a follow-up response is needed after navigation
+            if target_section and self.browser_session:
+                print(f"\n[Agent] 💬 PHASE 3: Checking if explanation needed...", flush=True)
+                
+                # Get fresh page context after navigation
+                await asyncio.sleep(0.5)
+                page_context = await self.browser_session.get_page_content()
+                self.presenter.update_page_context(page_context)
+                page_text = page_context.get('text_content', '')[:800]
+                
+                # Ask LLM if user needs a follow-up response
+                follow_up = await self._check_needs_follow_up(
+                    user_message=user_message,
+                    target_section=target_section,
+                    page_text=page_text
+                )
+                
+                if follow_up and follow_up.get('needs_response'):
+                    print(f"[Agent] 📝 LLM says: respond about '{follow_up.get('topic', target_section)}'", flush=True)
+                    
+                    # Generate contextual response using Presenter
+                    explanation = await self.presenter.generate_response(
+                        user_input=user_message,
+                        action_result=f"Now showing the {target_section} section",
+                        conversation_history=history
+                    )
+                    
+                    if explanation:
+                        await self._speak(explanation)
+                        final_speech = explanation  # Update for memory
+                        print(f"[Agent] ✓ Explained {target_section}", flush=True)
                 else:
-                    print(f"[Agent] ✓ Finished speaking ({chunks_sent} chunks)", flush=True)
-            else:
-                print(f"[Agent] ⚠️ Cannot send audio: mic={self.mic is not None}", flush=True)
+                    print(f"[Agent] ✓ No explanation needed", flush=True)
+            
+            print(f"\n{'='*60}", flush=True)
+            print(f"[Agent] ✅ Navigation complete!", flush=True)
+            
+            # Save to memory
+            if self.llm.memory and final_speech:
+                await self.llm.memory.add_message("user", user_message)
+                await self.llm.memory.add_message("assistant", final_speech)
                 
         except Exception as e:
             print(f"[Agent] Error generating response: {e}")
@@ -463,29 +716,394 @@ class AIAgent:
         finally:
             self.is_speaking = False
     
+    async def _generate_speech(
+        self, 
+        user_message: str, 
+        history: list, 
+        plan: Plan,
+        action_result: Optional[str] = None
+    ) -> str:
+        """Generate speech using the Presenter."""
+        return await self.presenter.generate_response(
+            user_input=user_message,
+            action_result=action_result,
+            conversation_history=history
+        )
+    
+    async def _check_needs_follow_up(
+        self, 
+        user_message: str, 
+        target_section: str,
+        page_text: str
+    ) -> dict:
+        """
+        Ask LLM if the user's message needs a follow-up explanation after navigation.
+        
+        Returns:
+            dict with 'needs_response' (bool) and 'topic' (str)
+        """
+        from openai import AsyncOpenAI
+        settings = get_settings()
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        
+        prompt = f"""After navigating to the "{target_section}" section, does the user need a spoken explanation?
+
+USER'S ORIGINAL MESSAGE: "{user_message}"
+
+PAGE CONTENT (what's now visible):
+{page_text[:1000]}
+
+Determine:
+1. Did the user just want to be taken somewhere? (e.g., "take me to X", "go to X", "show me X")
+   → No explanation needed, they can see it now.
+
+2. Did the user ask a question or want something explained? (e.g., "explain X", "how does X work", "what is X", "tell me about X", "I'm confused about X")
+   → Explanation IS needed.
+
+OUTPUT JSON:
+{{
+    "needs_response": true or false,
+    "reason": "brief reason",
+    "topic": "what to explain (if needed)"
+}}
+
+Only output valid JSON."""
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=100,
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            
+            import json
+            result = json.loads(response.choices[0].message.content or "{}")
+            return result
+            
+        except Exception as e:
+            print(f"[Agent] Follow-up check error: {e}", flush=True)
+            return {"needs_response": False}
+    
+    async def _speak(self, text: str) -> None:
+        """Convert text to speech and play it."""
+        if not text:
+            return
+            
+        audio_data = await self.tts.synthesize(text)
+        print(f"[Agent] 🔊 Generated {len(audio_data)} bytes of audio", flush=True)
+        
+        if self.mic and audio_data:
+            print(f"[Agent] 📤 Streaming {len(audio_data)} bytes...", flush=True)
+            
+            def write_audio_sync():
+                """Write audio - blocking mic handles pacing internally."""
+                chunk_ms = 100
+                samples_per_chunk = int(self.SAMPLE_RATE * (chunk_ms / 1000.0))
+                chunk_bytes = samples_per_chunk * 2
+                
+                chunks_sent = 0
+                interrupted = False
+                for i in range(0, len(audio_data), chunk_bytes):
+                    if not self.is_speaking or not self.is_running:
+                        interrupted = True
+                        break
+                    chunk = audio_data[i:i + chunk_bytes]
+                    try:
+                        self.mic.write_frames(chunk)
+                        chunks_sent += 1
+                    except Exception as e:
+                        print(f"[Agent] ❌ Audio write error: {e}", flush=True)
+                        break
+                return (chunks_sent, interrupted)
+            
+            chunks_sent, interrupted = await asyncio.to_thread(write_audio_sync)
+            if interrupted:
+                print(f"[Agent] ⏹️ Speech interrupted after {chunks_sent} chunks", flush=True)
+            else:
+                print(f"[Agent] ✓ Finished speaking ({chunks_sent} chunks)", flush=True)
+        else:
+            print(f"[Agent] ⚠️ Cannot send audio: mic={self.mic is not None}", flush=True)
+    
+    async def _execute_actions(self, plan: Plan) -> None:
+        """Execute all actions from the plan (supports multi-step navigation)."""
+        if not self.browser_session:
+            return
+        
+        # Get actions list (or single action for backwards compat)
+        actions = plan.actions if plan.actions else ([plan.action] if plan.action else [])
+        
+        if not actions:
+            return
+        
+        print(f"[Agent] 🚀 Executing {len(actions)} action(s)...", flush=True)
+        
+        for i, action in enumerate(actions):
+            print(f"[Agent] 🎯 Step {i+1}/{len(actions)}: {action.action_type} → {action.target}", flush=True)
+            
+            try:
+                if action.action_type == "scroll":
+                    direction = action.target or "down"
+                    await self.browser_session.scroll(direction)
+                    print(f"[Agent] ✓ Scrolled {direction}", flush=True)
+                    
+                elif action.action_type == "click":
+                    if action.target:
+                        success = await self._browser_click(action.target)
+                        if not success:
+                            print(f"[Agent] ⚠️ Click may have failed, continuing...", flush=True)
+                        else:
+                            # Wait for page to update after successful click
+                            await asyncio.sleep(1.0)
+                        
+                elif action.action_type == "navigate":
+                    if action.target:
+                        await self.browser_session.navigate(action.target)
+                        print(f"[Agent] ✓ Navigated to {action.target}", flush=True)
+                        
+                elif action.action_type == "go_back":
+                    try:
+                        await self.browser_session.page.go_back()
+                        print(f"[Agent] ✓ Went back", flush=True)
+                    except Exception as e:
+                        print(f"[Agent] ⚠️ Go back failed: {e}", flush=True)
+                        
+                elif action.action_type == "wait":
+                    await asyncio.sleep(2)
+                    print(f"[Agent] ✓ Waited", flush=True)
+                
+                # Small delay between actions for page to update
+                if i < len(actions) - 1:
+                    await asyncio.sleep(0.5)
+                    
+            except Exception as e:
+                print(f"[Agent] ❌ Action {i+1} failed: {e}", flush=True)
+    
+    async def _execute_action(self, plan: Plan) -> None:
+        """Execute a single action (backwards compat wrapper)."""
+        await self._execute_actions(plan)
+    
+    async def _execute_single_action(self, action) -> bool:
+        """Execute a single BrowserAction object. Returns success/failure."""
+        if not self.browser_session or not action:
+            return False
+        
+        print(f"[Agent] 🎯 Action: {action.action_type} → {action.target}", flush=True)
+        
+        try:
+            if action.action_type == "scroll":
+                direction = action.target or "down"
+                await self.browser_session.scroll(direction)
+                print(f"[Agent] ✓ Scrolled {direction}", flush=True)
+                return True
+                
+            elif action.action_type == "click":
+                if action.target:
+                    success = await self._browser_click(action.target)
+                    if success:
+                        print(f"[Agent] ✓ Clicked successfully", flush=True)
+                        await asyncio.sleep(1.0)  # Wait for page update
+                    else:
+                        print(f"[Agent] ⚠️ Click may have failed", flush=True)
+                    return success
+                    
+            elif action.action_type == "navigate":
+                if action.target:
+                    await self.browser_session.navigate(action.target)
+                    print(f"[Agent] ✓ Navigated to {action.target}", flush=True)
+                    return True
+                    
+            elif action.action_type == "go_back":
+                try:
+                    await self.browser_session.page.go_back()
+                    print(f"[Agent] ✓ Went back", flush=True)
+                    await asyncio.sleep(1.0)  # Wait for page to load
+                    return True
+                except Exception as e:
+                    print(f"[Agent] ⚠️ Go back failed: {e}", flush=True)
+                    return False
+                    
+            elif action.action_type == "wait":
+                await asyncio.sleep(2)
+                print(f"[Agent] ✓ Waited", flush=True)
+                return True
+                
+            return False
+            
+        except Exception as e:
+            print(f"[Agent] ❌ Action failed: {e}", flush=True)
+            return False
+    
+    async def _refresh_page_context(self) -> Optional[dict]:
+        """Refresh page context after an action and update presenter."""
+        if not self.browser_session:
+            return None
+        
+        try:
+            # Wait for page to stabilize after navigation/click
+            await asyncio.sleep(1.0)  # Give JS time to render
+            
+            page_context = await self.browser_session.get_page_content()
+            self.presenter.update_page_context(page_context)
+            
+            # Log the new page state for debugging
+            new_url = page_context.get("url", "")
+            new_title = page_context.get("title", "")
+            print(f"[Agent] 🔄 Page context refreshed: {new_title}", flush=True)
+            
+            return page_context
+        except Exception as e:
+            print(f"[Agent] ⚠️ Could not refresh page context: {e}", flush=True)
+            return None
+    
+    async def _run_playbook(self) -> None:
+        """Run the loaded playbook as a scripted demo."""
+        if not self.playbook or not self.browser_session:
+            print("[Agent] ⚠️ Cannot run playbook: missing playbook or browser", flush=True)
+            return
+        
+        print(f"[Agent] 🎬 Starting playbook: {self.playbook.name}", flush=True)
+        
+        # Create the demo runner with callbacks
+        self.demo_runner = DemoRunner(
+            browser_session=self.browser_session,
+            speak_callback=self._speak,
+            check_interrupted=lambda: not self.is_speaking or not self.is_running
+        )
+        
+        try:
+            # Run the playbook
+            success = await self.demo_runner.run_playbook(self.playbook)
+            
+            if success:
+                print(f"[Agent] ✓ Playbook completed successfully", flush=True)
+            else:
+                print(f"[Agent] ⚠️ Playbook ended early (interrupted or failed)", flush=True)
+                
+        except Exception as e:
+            print(f"[Agent] ❌ Playbook error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.demo_runner = None
+            self.is_speaking = False
+    
     async def _browser_scroll(self, direction: str) -> None:
         """Handle scroll action from LLM."""
         if self.browser_session:
             await self.browser_session.scroll(direction)
     
-    async def _browser_click(self, element_text: str) -> None:
-        """Handle click action from LLM - finds element by text."""
+    async def _browser_click(self, element_text: str) -> bool:
+        """Handle click action - uses smart DOM-based clicking."""
         if not self.browser_session:
-            return
+            return False
         
-        # Try to find and click element with matching text
-        # Use XPath to find by text content
-        selectors = [
-            f"button:has-text('{element_text}')",
-            f"a:has-text('{element_text}')",
-            f"[role='button']:has-text('{element_text}')",
-        ]
+        # Sanitize input: remove newlines, collapse spaces
+        element_text = element_text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+        element_text = ' '.join(element_text.split()).strip()
         
-        for selector in selectors:
-            if await self.browser_session.click(selector):
-                return
+        # Extract core text without trailing badges/symbols (e.g., "Sister Circle !" -> "Sister Circle")
+        core_text = re.sub(r'\s*[!@#$%^&*()0-9]+\s*$', '', element_text).strip()
         
-        print(f"[Agent] Could not find element with text: {element_text}", flush=True)
+        # === STRATEGY 1: Smart click (DOM-based, most reliable) ===
+        # This searches the actual DOM, finds the element, and clicks it or its clickable parent
+        texts_to_try = [element_text]
+        if core_text and core_text != element_text:
+            texts_to_try.insert(0, core_text)
+        
+        for text in texts_to_try:
+            if await self.browser_session.smart_click(text):
+                print(f"[Agent] ✓ Smart clicked '{text}'", flush=True)
+                return True
+        
+        # === STRATEGY 2: Playwright selectors as fallback ===
+        print(f"[Agent] Smart click failed, trying Playwright selectors...", flush=True)
+        for text in texts_to_try:
+            selectors = [
+                f"text={text}",
+                f"button:has-text('{text}')",
+                f"a:has-text('{text}')",
+                f"[role='button']:has-text('{text}')",
+            ]
+            for selector in selectors:
+                try:
+                    if await self.browser_session.click(selector, timeout=1000):
+                        print(f"[Agent] ✓ Clicked via selector", flush=True)
+                        return True
+                except Exception:
+                    pass
+        
+        print(f"[Agent] ❌ FAILED to click: {element_text}", flush=True)
+        return False
+    
+    async def _find_best_element(self, intent: str) -> Optional[str]:
+        """Use LLM to find the best matching element for an intent."""
+        if not self.browser_session:
+            return None
+        
+        try:
+            # Get available elements from the page (no delay - we wait after navigation)
+            page_content = await self.browser_session.get_page_content()
+            clickables = page_content.get("clickable_elements", [])
+            
+            if not clickables:
+                return None
+            
+            # Extract text from clickable elements
+            available = []
+            for el in clickables:
+                text = el.get("text", "").strip()
+                if text and len(text) < 100:  # Skip very long text
+                    available.append(text)
+            
+            if not available:
+                return None
+            
+            # Ask LLM to find the best match
+            from openai import AsyncOpenAI
+            from app.core.config import get_settings
+            settings = get_settings()
+            client = AsyncOpenAI(api_key=settings.openai_api_key)
+            
+            prompt = f"""Given these clickable elements on a webpage:
+{available}
+
+Which one best matches this intent: "{intent}"
+
+Rules:
+- Return ONLY the exact text of the matching element
+- If no good match, return "NONE"
+- Pick the most relevant button/link for the intent
+
+Answer with just the element text:"""
+
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=50,
+                temperature=0
+            )
+            
+            answer = response.choices[0].message.content.strip()
+            
+            if answer.upper() == "NONE":
+                return None
+            
+            # Check if answer is in available list (exact or partial)
+            if answer in available:
+                return answer
+            
+            # Try partial match
+            for el in available:
+                if answer.lower() in el.lower() or el.lower() in answer.lower():
+                    return el
+            
+            return None
+            
+        except Exception as e:
+            print(f"[Agent] Error finding element match: {e}", flush=True)
+            return None
     
     async def leave_room(self) -> None:
         """Leave the current room and clean up."""
@@ -517,8 +1135,8 @@ class AIAgent:
 _active_agents: dict[str, AIAgent] = {}
 
 
-async def spawn_agent(room_name: str, room_url: str, token: str) -> AIAgent:
-    """Spawn an AI agent for a room."""
+async def spawn_agent(room_name: str, room_url: str, token: str, company_id: Optional[str] = None) -> AIAgent:
+    """Spawn an AI agent for a room with optional company persona."""
     # Clean up any existing agent first
     if room_name in _active_agents:
         print(f"[Agent] Cleaning up existing agent for {room_name}", flush=True)
@@ -532,7 +1150,7 @@ async def spawn_agent(room_name: str, room_url: str, token: str) -> AIAgent:
             print(f"[Agent] Cleanup error (ignoring): {e}", flush=True)
             await asyncio.sleep(1)
     
-    agent = AIAgent()
+    agent = AIAgent(company_id=company_id)
     _active_agents[room_name] = agent
     
     # Run in background task with error handling

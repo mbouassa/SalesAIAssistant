@@ -18,6 +18,15 @@ from app.services.browser_service import browser_service
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
 
+# In-memory store for room metadata (company_id, etc.)
+# Maps room_name -> metadata dict
+_room_metadata: dict[str, dict] = {}
+
+
+def get_room_metadata(room_name: str) -> dict:
+    """Get metadata for a room."""
+    return _room_metadata.get(room_name, {})
+
 
 @router.post("", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
 async def create_room(request: RoomCreateRequest) -> RoomResponse:
@@ -34,13 +43,19 @@ async def create_room(request: RoomCreateRequest) -> RoomResponse:
             expires_in_minutes=request.expires_in_minutes
         )
         
+        room_name = room_data["name"]
         browser_live_url = None
+        
+        # Store room metadata (company_id for AI persona)
+        if request.company_id:
+            _room_metadata[room_name] = {"company_id": request.company_id}
+            print(f"[Rooms] Stored company_id '{request.company_id}' for room '{room_name}'", flush=True)
         
         # If product URL provided, create browser session
         if request.product_url:
             try:
                 browser_session = await browser_service.create_session(
-                    room_name=room_data["name"],
+                    room_name=room_name,
                     product_url=request.product_url
                 )
                 browser_live_url = browser_session.live_view_url
@@ -50,14 +65,15 @@ async def create_room(request: RoomCreateRequest) -> RoomResponse:
         
         return RoomResponse(
             id=room_data["id"],
-            name=room_data["name"],
+            name=room_name,
             url=room_data["url"],
             privacy=room_data["privacy"],
             created_at=datetime.fromisoformat(
                 room_data["created_at"].replace("Z", "+00:00")
             ),
             product_url=request.product_url,
-            browser_live_url=browser_live_url
+            browser_live_url=browser_live_url,
+            company_id=request.company_id
         )
     except Exception as e:
         raise HTTPException(

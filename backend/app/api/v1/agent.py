@@ -8,6 +8,9 @@ from pydantic import BaseModel
 
 from app.services.daily_service import DailyService
 from app.services.ai_agent import spawn_agent, remove_agent, get_agent
+from app.services.browser_service import browser_service
+from app.services.perception_service import perception_service
+from app.api.v1.rooms import get_room_metadata
 
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -44,6 +47,12 @@ async def join_room(room_name: str):
         await remove_agent(room_name)
     
     try:
+        # Get room metadata (company_id for persona)
+        metadata = get_room_metadata(room_name)
+        company_id = metadata.get("company_id")
+        if company_id:
+            print(f"[Agent API] Using company persona: {company_id}", flush=True)
+        
         # Get room info and create token for the agent
         daily_service = DailyService()
         room = await daily_service.get_room(room_name)
@@ -63,8 +72,8 @@ async def join_room(room_name: str):
         print(f"[Agent API] Room URL: {room_url}")
         print(f"[Agent API] Token created for AI Assistant")
         
-        # Spawn the agent
-        await spawn_agent(room_name, room_url, token)
+        # Spawn the agent with company persona
+        await spawn_agent(room_name, room_url, token, company_id=company_id)
         
         return AgentJoinResponse(
             success=True,
@@ -105,4 +114,42 @@ async def get_status(room_name: str):
         active=agent is not None,
         room_name=room_name,
     )
+
+
+@router.get("/perception/{room_name}")
+async def get_perception(room_name: str):
+    """
+    Test endpoint: Extract and return page state from browser session.
+    
+    Use this to verify Perception Service is working correctly.
+    """
+    session = browser_service.get_session(room_name)
+    
+    if not session or not session.page:
+        raise HTTPException(status_code=404, detail="No browser session for this room")
+    
+    # Extract page state
+    state = await perception_service.extract(session.page)
+    
+    # Return as dict for JSON serialization
+    return {
+        "url": state.url,
+        "domain": state.domain,
+        "title": state.title,
+        "text_summary_length": len(state.text_summary),
+        "text_preview": state.text_summary[:300] + "..." if len(state.text_summary) > 300 else state.text_summary,
+        "headings": [{"level": h.level, "text": h.text} for h in state.headings],
+        "clickables_count": len(state.clickables),
+        "clickables": [
+            {"role": c.role, "name": c.name, "selector": c.selector[:50]}
+            for c in state.clickables[:15]
+        ],
+        "inputs_count": len(state.inputs),
+        "inputs": [
+            {"type": i.input_type, "name": i.name}
+            for i in state.inputs
+        ],
+        "extraction_time_ms": state.extraction_time_ms,
+        "llm_summary": perception_service.summarize_for_llm(state)
+    }
 

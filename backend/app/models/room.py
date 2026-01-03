@@ -27,6 +27,10 @@ class RoomCreateRequest(BaseModel):
         default=None,
         description="URL of the product page to demo (enables browser sharing)"
     )
+    company_id: str | None = Field(
+        default=None,
+        description="Company ID for loading custom persona (e.g., 'tenex')"
+    )
 
 
 class RoomResponse(BaseModel):
@@ -39,6 +43,7 @@ class RoomResponse(BaseModel):
     created_at: datetime
     product_url: str | None = None
     browser_live_url: str | None = None
+    company_id: str | None = None
     
     class Config:
         from_attributes = True
