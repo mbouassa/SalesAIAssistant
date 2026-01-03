@@ -358,7 +358,7 @@ Output ONLY the narration text, nothing else."""
             if url:
                 logger.debug(f"Navigating to: {url}")
                 await self.browser.navigate(url)
-                await asyncio.sleep(0.5)  # Brief wait for page load
+                await asyncio.sleep(0.25)  # Brief wait for page load
                 return True
             return False
         
@@ -366,7 +366,7 @@ Output ONLY the narration text, nothing else."""
             logger.debug("Going back in browser history")
             try:
                 await self.browser.page.go_back()
-                await asyncio.sleep(0.5)  # Brief wait for page load
+                await asyncio.sleep(0.25)  # Brief wait for page load
                 return True
             except Exception as e:
                 logger.warning(f"Go back failed: {e}")
@@ -386,7 +386,7 @@ Output ONLY the narration text, nothing else."""
             try:
                 if await self.browser.smart_click(target):
                     logger.debug(f"✓ Smart clicked: {target}")
-                    await asyncio.sleep(0.3)  # Brief wait for UI
+                    await asyncio.sleep(0.15)  # Brief wait for UI
                     return True
             except Exception:
                 pass
@@ -405,7 +405,7 @@ Output ONLY the narration text, nothing else."""
                 success = await self.browser.click(selector)
                 if success:
                     logger.debug(f"✓ Clicked: {target}")
-                    await asyncio.sleep(0.3)  # Brief wait for UI
+                    await asyncio.sleep(0.15)  # Brief wait for UI
                     return True
             except Exception:
                 continue

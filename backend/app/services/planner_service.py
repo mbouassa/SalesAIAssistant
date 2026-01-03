@@ -146,6 +146,14 @@ class PlannerService:
     - Whether to take an action (scroll, click, etc.)
     - Whether to speak (and what intent)
     - The order of operations
+    
+    NOTE: The PLAN_PROMPT and EXECUTE_PROMPT below contain HealingPath-specific
+    examples (e.g., "Listen Now", "Sacred Library", "Sister Circle").
+    These are just examples for the LLM - the actual navigation uses the
+    site_map and available_elements passed dynamically from the persona.
+    
+    TODO: For full multi-tenant support, move these examples to persona YAML
+    and inject them dynamically into the prompts.
     """
     
     # Phase 1: Create a high-level navigation plan based on site_map
@@ -290,38 +298,24 @@ Only output valid JSON."""
         self.current_plan_step = 0  # Track execution progress
         logger.info("PlannerService initialized")
     
-    def _detect_location(self, url: str, title: str = "") -> str:
-        """Detect current location from URL and title."""
-        url_lower = url.lower()
-        title_lower = title.lower()
-        
-        # Check for signin/login page first
-        if '/signin' in url_lower or '/login' in url_lower:
-            return "signin"
-        
-        # Check URL path for location
-        if '/reflection' in url_lower or '/journal' in url_lower or '/prompt' in url_lower:
-            return "journaling"
-        elif '/audio' in url_lower or '/meditation' in url_lower:
-            return "meditation"
-        elif '/booklet' in url_lower or '/library' in url_lower or '/sacred' in url_lower:
-            return "booklets"
-        elif '/community' in url_lower or '/circle' in url_lower:
-            return "community"
-        elif '/dashboard' in url_lower or url_lower.endswith('/dashboard'):
-            return "dashboard"
-        
-        # Check title as fallback
-        if 'reflection' in title_lower or 'journal' in title_lower:
-            return "journaling"
-        elif 'library' in title_lower or 'booklet' in title_lower:
-            return "booklets"
-        elif 'meditation' in title_lower or 'audio' in title_lower:
-            return "meditation"
-        elif 'circle' in title_lower or 'community' in title_lower:
-            return "community"
-        
-        return "dashboard"  # Default
+    # NOTE: _detect_location is deprecated - we now use LLM-based screen detection
+    # in ai_agent._detect_current_screen() which compares page content to persona's
+    # screen descriptions. This is more reliable for SPAs where URLs don't change.
+    # Keeping commented for reference:
+    #
+    # def _detect_location(self, url: str, title: str = "") -> str:
+    #     """Detect current location from URL and title."""
+    #     url_lower = url.lower()
+    #     title_lower = title.lower()
+    #     
+    #     if '/signin' in url_lower or '/login' in url_lower:
+    #         return "signin"
+    #     if '/reflection' in url_lower or '/journal' in url_lower:
+    #         return "journaling"
+    #     elif '/audio' in url_lower or '/meditation' in url_lower:
+    #         return "meditation"
+    #     # ... etc (HealingPath-specific URL patterns)
+    #     return "dashboard"
     
     async def create_navigation_plan(
         self,

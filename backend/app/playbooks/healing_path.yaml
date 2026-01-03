@@ -22,9 +22,6 @@ steps:
   # === DASHBOARD OVERVIEW ===
   - id: "dashboard_overview"
     screen: "dashboard"
-    action:
-      type: "wait"
-      duration: 0.5
     narrate_intent: "welcome user to the dashboard, briefly explain it's their daily home base with journaling, meditation, and community"
 
   # === JOURNALING SECTION ===
@@ -35,13 +32,6 @@ steps:
       target: "Start Today's Reflection"
       intent: "journaling or reflection feature"
     narrate_intent: "introduce the daily journaling practice, mention it only takes a few minutes"
-
-  - id: "describe_journaling"
-    screen: "journaling"
-    action:
-      type: "wait"
-      duration: 0.5
-    narrate_intent: "explain the weekly journey calendar and how each day has a theme"
 
   - id: "open_writing_space"
     screen: "journaling_active"
@@ -66,13 +56,6 @@ steps:
       intent: "audio or meditation feature"
     narrate_intent: "introduce the guided meditations, mention they're short and nurturing"
 
-  - id: "describe_meditation"
-    screen: "meditation"
-    action:
-      type: "wait"
-      duration: 0.5
-    narrate_intent: "explain the inner child meditation and how it helps reconnect with your younger self"
-
   - id: "return_from_meditation"
     action:
       type: "navigate"
@@ -87,13 +70,6 @@ steps:
       target: "Sacred Library"
       intent: "booklet or library feature"
     narrate_intent: "introduce the printable healing guides, mention they're beautiful and can be kept offline"
-
-  - id: "describe_booklets"
-    screen: "booklets"
-    action:
-      type: "wait"
-      duration: 0.5
-    narrate_intent: "highlight the current booklet and that more guides unlock as you progress"
 
   - id: "return_from_booklets"
     action:
@@ -119,9 +95,6 @@ steps:
 
   # === CLOSING ===
   - id: "demo_complete"
-    action:
-      type: "wait"
-      duration: 0.5
     narrate_intent: "wrap up the demo warmly, summarize the core features, ask if they have questions"
 
 # What to say if demo fails

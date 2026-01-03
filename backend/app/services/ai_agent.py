@@ -632,7 +632,7 @@ class AIAgent:
                         if success:
                             print(f"[Agent] ✅ Navigated to '{step_details}'", flush=True)
                             print(f"[Agent] ⏳ Waiting 2s for page to fully load...", flush=True)
-                            await asyncio.sleep(2.0)  # Wait for page to fully load before clicking
+                            await asyncio.sleep(1.0)  # Wait for page to load
                         else:
                             print(f"[Agent] ❌ Failed to navigate to '{step_details}'", flush=True)
                     continue
@@ -640,12 +640,12 @@ class AIAgent:
                 # Handle direct click action from planner (clicks element by name)
                 if step_action == "click":
                     # Wait a moment for page to be ready before clicking
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(0.5)
                     print(f"[Agent] 🖱️ Direct click: '{step_details}'", flush=True)
                     success = await self._browser_click(step_details)
                     if success:
                         print(f"[Agent] ✅ Clicked '{step_details}'", flush=True)
-                        await asyncio.sleep(1.0)  # Wait for navigation after click
+                        await asyncio.sleep(0.5)  # Wait for navigation after click
                     else:
                         print(f"[Agent] ❌ Failed to click '{step_details}'", flush=True)
                     continue
@@ -687,7 +687,7 @@ class AIAgent:
                         if success:
                             print(f"[Agent] ✅ Navigated to '{nav_url}'", flush=True)
                             print(f"[Agent] ⏳ Waiting 2s for page to fully load...", flush=True)
-                            await asyncio.sleep(2.0)  # Wait for page to fully load
+                            await asyncio.sleep(1.0)  # Wait for page to load
                         else:
                             print(f"[Agent] ❌ Failed to navigate to '{nav_url}'", flush=True)
                     continue
@@ -1185,7 +1185,7 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
             await self._speak("Sure! Let me give you a quick tour. One moment while I take you to the home page.")
             success = await self.browser_session.navigate(home_url)
             if success:
-                await asyncio.sleep(2.0)  # Wait for page to load
+                await asyncio.sleep(1.0)  # Wait for page to load
                 print(f"[Agent] ✓ Now on home page, starting demo", flush=True)
             else:
                 print(f"[Agent] ⚠️ Could not navigate to home, starting demo anyway", flush=True)
