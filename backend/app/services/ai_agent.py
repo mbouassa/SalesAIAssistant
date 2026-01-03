@@ -491,6 +491,15 @@ class AIAgent:
                     else:
                         print(f"[Agent] Demo keyword detected but LLM said not a demo request", flush=True)
             
+            # === CHECK FOR CLOSING INTENT ===
+            closing_config = getattr(self.presenter.persona, 'closing', {})
+            if closing_config:
+                is_closing = await self._check_closing_intent(user_message)
+                if is_closing:
+                    print(f"[Agent] 👋 Closing intent detected", flush=True)
+                    await self._handle_closing(closing_config)
+                    return
+            
             # Get current page context if we have a browser
             page_context = None
             available_actions = []
@@ -980,6 +989,80 @@ Only output valid JSON."""
         except Exception as e:
             print(f"[Agent] Follow-up check error: {e}", flush=True)
             return {"needs_response": False}
+    
+    async def _check_closing_intent(self, user_message: str) -> bool:
+        """
+        Use LLM to detect if user is signaling they're done with the demo/conversation.
+        Examples: "all good", "that's all", "I've seen enough", "no thanks", "I'm good"
+        """
+        from openai import AsyncOpenAI
+        from app.core.config import get_settings
+        settings = get_settings()
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        
+        # Get conversation history for context
+        all_history = self.llm.memory.get_messages_for_llm() if self.llm.memory else []
+        history = all_history[-4:] if all_history else []
+        history_str = "\n".join([
+            f"{'AI' if m.get('role') == 'assistant' else 'User'}: {m.get('content', '')[:100]}"
+            for m in history
+        ])
+        
+        prompt = f"""Determine if the user is signaling they are DONE with the conversation/demo and ready to wrap up.
+
+RECENT CONVERSATION:
+{history_str}
+
+USER'S LATEST MESSAGE: "{user_message}"
+
+Closing signals include:
+- "all good", "that's all", "I'm good", "no thanks"
+- "I've seen enough", "that's it for me"
+- "no more questions", "I think I'm done"
+- Polite declines to see more features
+
+NOT closing signals:
+- Asking questions about features
+- Requesting to see something else
+- "Sure" or "yes" (agreeing to continue)
+- Any request for more information
+
+Is the user signaling they want to END the conversation? Answer ONLY "yes" or "no"."""
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0.0
+            )
+            
+            answer = response.choices[0].message.content.strip().lower()
+            is_closing = answer == "yes"
+            print(f"[Agent] 👋 Closing intent check: '{user_message[:30]}...' → {is_closing}", flush=True)
+            return is_closing
+            
+        except Exception as e:
+            print(f"[Agent] Closing intent check error: {e}", flush=True)
+            return False
+    
+    async def _handle_closing(self, closing_config: dict) -> None:
+        """Handle the closing flow - say goodbye and offer to schedule a call."""
+        founder_name = closing_config.get('founder_name', 'the founder')
+        closing_message = closing_config.get('closing_message', '')
+        
+        if not closing_message:
+            closing_message = f"It was such a pleasure showing you around! If you'd like to chat more, I can set up a quick call with {founder_name}. Would you like me to schedule that for you?"
+        
+        # Replace placeholders
+        closing_message = closing_message.replace('{founder_name}', founder_name)
+        
+        print(f"[Agent] 👋 Speaking closing message", flush=True)
+        await self._speak(closing_message)
+        
+        # Save to memory
+        if self.llm.memory:
+            await self.llm.memory.add_message("assistant", closing_message)
     
     async def _detect_current_screen(self, page_text: str) -> Optional[dict]:
         """

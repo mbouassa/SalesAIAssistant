@@ -55,6 +55,7 @@ class Persona:
     home_url: str = ""  # Home/dashboard URL - the only URL needed for navigation
     home_page_description: str = ""  # Description of home page for LLM-based detection
     screens: dict = field(default_factory=dict)  # Detailed screen descriptions for demos/conversations
+    closing: dict = field(default_factory=dict)  # Closing flow config (founder_name, calendly_url, closing_message)
     
     @classmethod
     def from_yaml(cls, path: Path) -> "Persona":

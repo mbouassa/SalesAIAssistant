@@ -49,6 +49,12 @@ common_objections:
 demo_intro: "Hey love — I'm Marc. This is The Inner Child Journey. It's a gentle 7-day method to turn down the inner critic and build real self-compassion. What are you hoping feels lighter for you right now?"
 demo_outro: "That's the core of the Journey: simple practices, real support, and steady change over time. What questions do you have — and do you want me to suggest the best first step for where you're at?"
 
+# Closing flow - when user signals they're done
+closing:
+  founder_name: "Sarah"
+  calendly_url: "https://calendly.com/healingpath/intro"
+  closing_message: "It was such a pleasure walking through this with you! If you'd like to chat more or have any questions, I can set up a quick call with {founder_name}, the founder of Healing Path. Would you like me to schedule that for you?"
+
 # Home/Dashboard URL - the ONLY URL needed for navigation
 # All other navigation happens through clicking from here
 home_url: "https://healing-path.vercel.app/dashboard"
