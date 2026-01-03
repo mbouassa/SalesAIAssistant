@@ -41,7 +41,22 @@ class DailyEventHandler(EventHandler):
         self.agent = agent
     
     def on_participant_joined(self, participant):
-        print(f"[Daily Event] Participant joined: {participant.get('id', 'unknown')}", flush=True)
+        pid = participant.get('id', 'unknown')
+        info = participant.get('info', {})
+        user_name = info.get('userName', '')
+        is_local = participant.get('local', False)
+        
+        print(f"[Daily Event] Participant joined: {user_name} (id={pid[:8]}..., local={is_local})", flush=True)
+        
+        # Greet non-local (remote) participants who haven't been greeted yet
+        if not is_local and user_name and pid not in self.agent.greeted_participants:
+            self.agent.greeted_participants.add(pid)
+            # Schedule greeting on the main event loop (callback runs in different thread)
+            if self.agent._loop:
+                asyncio.run_coroutine_threadsafe(
+                    self.agent._greet_user(user_name),
+                    self.agent._loop
+                )
     
     def on_participant_updated(self, participant):
         """Monitor track state changes."""
@@ -100,6 +115,11 @@ class AIAgent:
         self.room_url: str = ""
         self.room_name: str = ""
         self.token: str = ""
+        self.greeted_participants: set = set()  # Track who we've greeted
+        self.has_interacted: bool = False  # Track if user spoke first (skip greeting)
+        self._loop: Optional[asyncio.AbstractEventLoop] = None  # Store event loop for thread-safe scheduling
+        self.pipeline_ready: bool = False  # True when audio pipeline is fully initialized
+        self._demo_interrupted: bool = False  # True when user interrupts during a demo
         
         # Browser session (if product demo)
         self.browser_session: Optional[BrowserSession] = None
@@ -132,6 +152,7 @@ class AIAgent:
         self.room_url = room_url
         self.token = token
         self.is_running = True
+        self._loop = asyncio.get_running_loop()  # Capture event loop for thread-safe callbacks
         
         try:
             # Initialize Daily (only once)
@@ -323,10 +344,16 @@ class AIAgent:
                             if transcript:
                                 print(f"[Agent] 🎤 Heard: '{transcript}'", flush=True)
                                 
+                                # Mark that user has spoken (skip greeting if pending)
+                                self.has_interacted = True
+                                
                                 # Barge-in: stop AI if it's speaking
                                 if self.is_speaking:
                                     print("[Agent] 🛑 User interrupted - stopping speech", flush=True)
                                     self.is_speaking = False
+                                    # If demo is running, mark it as interrupted
+                                    if hasattr(self, '_demo_interrupted'):
+                                        self._demo_interrupted = True
                                 
                                 # Put transcript in queue for processing
                                 asyncio.create_task(self._transcript_queue.put(transcript))
@@ -356,6 +383,7 @@ class AIAgent:
                 
                 # Start listening - this runs the websocket receive loop
                 # We need to run it concurrently with our audio loops
+                self.pipeline_ready = True  # Signal that audio pipeline is ready for speech
                 await asyncio.gather(
                     self._run_deepgram_listener(connection),
                     self._audio_receive_loop(),
@@ -517,7 +545,8 @@ class AIAgent:
                 available_elements=available_actions,
                 home_url=home_url,
                 persona_context=persona_context,
-                is_on_home_page=is_on_home_page
+                is_on_home_page=is_on_home_page,
+                conversation_history=history
             )
             
             # Check if there are any ACTION steps (click, navigate_to, navigate) in the plan
@@ -793,7 +822,13 @@ class AIAgent:
                         final_speech = explanation  # Update for memory
                         print(f"[Agent] ✓ Explained {target_section}", flush=True)
                 else:
-                    print(f"[Agent] ✓ No explanation needed", flush=True)
+                    # Always ask a follow-up question to keep conversation flowing
+                    print(f"[Agent] 💬 No explanation needed, but asking follow-up question", flush=True)
+                    screen_name = screen_context.get('name', target_section) if screen_context else target_section
+                    follow_up_question = f"So here's the {screen_name}. Would you like me to walk you through how it works?"
+                    await self._speak(follow_up_question)
+                    final_speech = follow_up_question
+                    print(f"[Agent] ✓ Asked follow-up about {target_section}", flush=True)
             
             print(f"\n{'='*60}", flush=True)
             print(f"[Agent] ✅ Navigation complete!", flush=True)
@@ -999,6 +1034,46 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
             print(f"[Agent] ⚠️ Screen detection failed: {e}", flush=True)
             return None
     
+    async def _greet_user(self, user_name: str) -> None:
+        """Greet a user when they join the call."""
+        # Wait for audio pipeline to be ready (Deepgram connected, loops running)
+        max_wait = 10  # Max 10 seconds
+        waited = 0
+        while not self.pipeline_ready and waited < max_wait:
+            await asyncio.sleep(0.5)
+            waited += 0.5
+        
+        if not self.pipeline_ready:
+            print(f"[Agent] Skipping greeting - pipeline not ready after {max_wait}s", flush=True)
+            return
+        
+        # Wait a moment for user to settle in after pipeline is ready
+        await asyncio.sleep(1.0)
+        
+        # Don't greet if we're not running
+        if not self.is_running:
+            print(f"[Agent] Skipping greeting - agent not running", flush=True)
+            return
+        
+        # Don't greet if user already spoke first
+        if self.has_interacted:
+            print(f"[Agent] Skipping greeting - user already initiated conversation", flush=True)
+            return
+        
+        # Get greeting template from persona
+        greeting_template = getattr(self.presenter.persona, 'greeting_template', '')
+        if not greeting_template:
+            greeting_template = "Hey {user_name}, nice to meet you! Ready for a quick tour?"
+        
+        # Fill in the user's name
+        greeting = greeting_template.replace('{user_name}', user_name)
+        
+        print(f"[Agent] 👋 Greeting user: {user_name}", flush=True)
+        print(f"[Agent] 💬 Saying: {greeting}", flush=True)
+        
+        # Speak the greeting
+        await self._speak(greeting)
+    
     async def _speak(self, text: str) -> None:
         """Convert text to speech and play it."""
         if not text:
@@ -1009,6 +1084,7 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
         
         if self.mic and audio_data:
             print(f"[Agent] 📤 Streaming {len(audio_data)} bytes...", flush=True)
+            self.is_speaking = True  # Mark as speaking BEFORE streaming
             
             def write_audio_sync():
                 """Write audio - blocking mic handles pacing internally."""
@@ -1032,6 +1108,7 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
                 return (chunks_sent, interrupted)
             
             chunks_sent, interrupted = await asyncio.to_thread(write_audio_sync)
+            self.is_speaking = False  # Done speaking
             if interrupted:
                 print(f"[Agent] ⏹️ Speech interrupted after {chunks_sent} chunks", flush=True)
             else:
@@ -1191,10 +1268,12 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
                 print(f"[Agent] ⚠️ Could not navigate to home, starting demo anyway", flush=True)
         
         # Create the demo runner with callbacks and persona for dynamic narration
+        # Reset demo interruption flag
+        self._demo_interrupted = False
         self.demo_runner = DemoRunner(
             browser_session=self.browser_session,
             speak_callback=self._speak,
-            check_interrupted=lambda: not self.is_speaking or not self.is_running,
+            check_interrupted=lambda: self._demo_interrupted or not self.is_running,
             persona=self.presenter.persona
         )
         

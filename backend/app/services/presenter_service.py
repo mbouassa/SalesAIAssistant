@@ -50,6 +50,7 @@ class Persona:
     common_objections: dict[str, str] = field(default_factory=dict)
     demo_intro: str = "Hi! I'm excited to show you around today."
     demo_outro: str = "Thanks for checking this out! Any questions?"
+    greeting_template: str = "Hey {user_name}, nice to meet you! I'm here to show you around. Ready for a quick tour?"
     site_map: list[dict] = field(default_factory=list)  # Navigation structure for intent-based nav
     home_url: str = ""  # Home/dashboard URL - the only URL needed for navigation
     home_page_description: str = ""  # Description of home page for LLM-based detection
@@ -268,6 +269,10 @@ class PresenterService:
             context_parts.append("IMPORTANT: You already acknowledged the user's request and navigated here.")
             context_parts.append("Now describe what's on screen as a NATURAL CONTINUATION.")
             context_parts.append("Start with something like 'So here we are...' or 'This is where...' - NOT 'Sure!' or 'Of course!'")
+            context_parts.append("ALWAYS end with a follow-up question to keep the conversation flowing, like:")
+            context_parts.append("  - 'Want me to walk you through how this works?'")
+            context_parts.append("  - 'Would you like me to show you around?'")
+            context_parts.append("  - 'Any questions about this?'")
             context_parts.append("")
         
         # Add screen context if available (from LLM detection)

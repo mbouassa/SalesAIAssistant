@@ -168,6 +168,9 @@ YOUR PERSONA:
 
 IMPORTANT: When generating speech, embody this persona fully. Be warm and human, not robotic.
 
+RECENT CONVERSATION:
+{conversation_history}
+
 SITE STRUCTURE:
 {site_map}
 
@@ -177,6 +180,12 @@ AVAILABLE CLICKABLE ELEMENTS ON THIS PAGE:
 {available_elements}
 
 USER REQUEST: "{user_message}"
+
+CONTEXT UNDERSTANDING:
+- Use the RECENT CONVERSATION to understand what the user is referring to.
+- If user says "Sure", "Yes", "OK" etc., look at what you just asked them!
+- If you asked "Would you like me to walk you through this?", and user says "Sure", generate a walkthrough.
+- Short responses like "yes", "sure", "ok" are answers to your last question.
 
 === CURRENT LOCATION (PRE-CALCULATED - TRUST THIS!) ===
 
@@ -326,7 +335,8 @@ Only output valid JSON."""
         available_elements: list[str] = None,
         home_url: str = "",
         persona_context: dict = None,
-        is_on_home_page: bool = False
+        is_on_home_page: bool = False,
+        conversation_history: list[dict] = None
     ) -> dict:
         """
         Phase 1: Create a high-level navigation plan.
@@ -349,6 +359,17 @@ Only output valid JSON."""
         if not elements_str:
             elements_str = "(no clickable elements found)"
         
+        # Format conversation history (last 4 messages for context)
+        history = conversation_history or []
+        recent_history = history[-4:] if len(history) > 4 else history
+        if recent_history:
+            history_str = "\n".join([
+                f"{'You' if msg.get('role') == 'assistant' else 'User'}: {msg.get('content', '')[:200]}"
+                for msg in recent_history
+            ])
+        else:
+            history_str = "(No prior conversation)"
+        
         # Extract persona info (with defaults)
         persona = persona_context or {}
         persona_name = persona.get("name", "Demo Assistant")
@@ -364,6 +385,7 @@ Only output valid JSON."""
             persona_tone=persona_tone,
             persona_style=persona_style,
             persona_product=persona_product,
+            conversation_history=history_str,
             site_map=site_map_str,
             home_url=home_url,
             is_on_home_page=home_status,
