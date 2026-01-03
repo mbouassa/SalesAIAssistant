@@ -223,11 +223,20 @@ class DemoRunner:
         action = step.action
         action_type = action.get("type", "wait")
         
-        # Execute the action
-        action_success = await self._perform_action(action_type, action, step.fallbacks)
+        # Run action and narration generation IN PARALLEL
+        # While browser navigates/clicks, LLM generates the narration text
+        action_task = asyncio.create_task(
+            self._perform_action(action_type, action, step.fallbacks)
+        )
+        narration_task = asyncio.create_task(
+            self._get_narration(step)
+        )
         
-        # Generate and speak narration
-        narration = await self._get_narration(step)
+        # Wait for both to complete (they run simultaneously)
+        action_success, narration = await asyncio.gather(action_task, narration_task)
+        logger.debug(f"Action: {action_success}, Narration ready: {len(narration) if narration else 0} chars")
+        
+        # Now speak the narration (TTS still sequential - audio must play in order)
         if narration:
             logger.debug(f"Narrating: {narration[:50]}...")
             await self.speak(narration)
