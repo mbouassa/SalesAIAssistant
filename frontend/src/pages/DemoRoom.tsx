@@ -58,7 +58,7 @@ export default function DemoRoom() {
 
       dailyCall = DailyIframe.createCallObject({
         audioSource: true,
-        videoSource: true,
+        videoSource: false,  // Camera off by default
       })
 
       dailyCall.on('joined-meeting', async () => {

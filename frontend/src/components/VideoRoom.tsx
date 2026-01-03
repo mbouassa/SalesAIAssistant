@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { DailyCall, DailyParticipant } from '@daily-co/daily-js'
 import VideoTile from './VideoTile'
 import ControlButton from './ControlButton'
@@ -20,8 +20,69 @@ interface VideoRoomProps {
 
 export default function VideoRoom({ roomName, callObject, participants, onLeave, browserLiveUrl }: VideoRoomProps) {
   const [isMuted, setIsMuted] = useState(false)
-  const [isVideoOff, setIsVideoOff] = useState(false)
+  const [isVideoOff, setIsVideoOff] = useState(true)  // Camera off by default
   const [linkCopied, setLinkCopied] = useState(false)
+  
+  // Draggable user tile state
+  const [tilePosition, setTilePosition] = useState({ x: 0, y: 0 })
+  const [isDragging, setIsDragging] = useState(false)
+  const dragRef = useRef<{ startX: number; startY: number; initialX: number; initialY: number } | null>(null)
+  
+  const handleDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault()
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY
+    
+    dragRef.current = {
+      startX: clientX,
+      startY: clientY,
+      initialX: tilePosition.x,
+      initialY: tilePosition.y,
+    }
+    setIsDragging(true)
+  }, [tilePosition])
+  
+  // Attach move/end handlers to document for smooth dragging
+  useEffect(() => {
+    if (!isDragging) return
+    
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!dragRef.current) return
+      const deltaX = e.clientX - dragRef.current.startX
+      const deltaY = e.clientY - dragRef.current.startY
+      setTilePosition({
+        x: dragRef.current.initialX + deltaX,
+        y: dragRef.current.initialY + deltaY,
+      })
+    }
+    
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!dragRef.current || !e.touches[0]) return
+      const deltaX = e.touches[0].clientX - dragRef.current.startX
+      const deltaY = e.touches[0].clientY - dragRef.current.startY
+      setTilePosition({
+        x: dragRef.current.initialX + deltaX,
+        y: dragRef.current.initialY + deltaY,
+      })
+    }
+    
+    const handleEnd = () => {
+      setIsDragging(false)
+      dragRef.current = null
+    }
+    
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleEnd)
+    document.addEventListener('touchmove', handleTouchMove)
+    document.addEventListener('touchend', handleEnd)
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleEnd)
+      document.removeEventListener('touchmove', handleTouchMove)
+      document.removeEventListener('touchend', handleEnd)
+    }
+  }, [isDragging])
 
   const copyLink = useCallback(() => {
     const url = window.location.href
@@ -35,8 +96,15 @@ export default function VideoRoom({ roomName, callObject, participants, onLeave,
     setIsMuted(!isMuted)
   }, [callObject, isMuted])
 
-  const toggleVideo = useCallback(() => {
-    callObject.setLocalVideo(isVideoOff)
+  const toggleVideo = useCallback(async () => {
+    if (isVideoOff) {
+      // Turn camera ON - need to start the video input
+      await callObject.setInputDevicesAsync({ videoSource: true })
+      callObject.setLocalVideo(true)
+    } else {
+      // Turn camera OFF
+      callObject.setLocalVideo(false)
+    }
     setIsVideoOff(!isVideoOff)
   }, [callObject, isVideoOff])
 
@@ -94,16 +162,21 @@ export default function VideoRoom({ roomName, callObject, participants, onLeave,
             {/* Full-width browser */}
             <BrowserView liveUrl={browserLiveUrl} className="w-full h-full" />
             
-            {/* User video tile - floating in bottom right corner */}
+            {/* User video tile - floating & draggable */}
             {localParticipant && (
-              <div className="absolute bottom-4 right-4 w-52 h-40 z-20">
-                <div className="w-full h-full rounded-xl overflow-hidden shadow-2xl border-2 border-white/20">
-                  <VideoTile
-                    participant={localParticipant}
-                    callObject={callObject}
-                    isLocal={true}
-                  />
-                </div>
+              <div
+                className={`absolute bottom-4 right-4 w-52 h-40 z-20 shadow-2xl select-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+                style={{
+                  transform: `translate(${tilePosition.x}px, ${tilePosition.y}px)`,
+                }}
+                onMouseDown={handleDragStart}
+                onTouchStart={handleDragStart}
+              >
+                <VideoTile
+                  participant={localParticipant}
+                  callObject={callObject}
+                  isLocal={true}
+                />
               </div>
             )}
             
