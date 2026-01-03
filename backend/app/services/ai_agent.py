@@ -120,6 +120,8 @@ class AIAgent:
         self._loop: Optional[asyncio.AbstractEventLoop] = None  # Store event loop for thread-safe scheduling
         self.pipeline_ready: bool = False  # True when audio pipeline is fully initialized
         self._demo_interrupted: bool = False  # True when user interrupts during a demo
+        self._plan_interrupted: bool = False  # True when user interrupts during plan execution
+        self._responding: bool = False  # True while in _respond() method
         
         # Browser session (if product demo)
         self.browser_session: Optional[BrowserSession] = None
@@ -347,9 +349,15 @@ class AIAgent:
                                 # Mark that user has spoken (skip greeting if pending)
                                 self.has_interacted = True
                                 
+                                # Mark plan as interrupted whenever user speaks during a response
+                                # This catches interruptions during both speech AND thinking phases
+                                if hasattr(self, '_responding') and self._responding:
+                                    self._plan_interrupted = True
+                                    print("[Agent] 🛑 User spoke during response - marking interrupted", flush=True)
+                                
                                 # Barge-in: stop AI if it's speaking
                                 if self.is_speaking:
-                                    print("[Agent] 🛑 User interrupted - stopping speech", flush=True)
+                                    print("[Agent] 🛑 Stopping speech", flush=True)
                                     self.is_speaking = False
                                     # If demo is running, mark it as interrupted
                                     if hasattr(self, '_demo_interrupted'):
@@ -460,6 +468,8 @@ class AIAgent:
     async def _respond(self, user_message: str) -> None:
         """Generate and speak a response, potentially with browser actions."""
         self.is_speaking = True
+        self._plan_interrupted = False  # Reset interruption flag for new response
+        self._responding = True  # Track that we're in a response flow
         
         try:
             print(f"[Agent] 💬 Responding to: '{user_message}'")
@@ -521,21 +531,14 @@ class AIAgent:
                 "product_name": self.presenter.persona.product_name,
             }
             
-            # Get home page description for LLM-based detection
-            home_page_description = getattr(self.presenter.persona, 'home_page_description', '')
-            
-            # Use LLM to check if we're on home page (compares page content to description)
-            is_on_home_page = await self._check_if_on_home_page(
-                page_text=page_text,
-                home_page_description=home_page_description
-            )
-            
-            print(f"[Agent] 🏠 Home page check (LLM): {is_on_home_page}", flush=True)
-            
-            # Detect current screen for context-aware responses
+            # Detect current screen for context-aware responses (single LLM call)
             screen_context = await self._detect_current_screen(page_text)
             if screen_context:
                 print(f"[Agent] 🖥️ Screen context: {screen_context.get('name', 'unknown')}", flush=True)
+            
+            # Derive home page status from screen detection (no extra LLM call!)
+            is_on_home_page = screen_context and screen_context.get('id') == 'dashboard'
+            print(f"[Agent] 🏠 On home page: {is_on_home_page}", flush=True)
             
             nav_plan = await self.planner.create_navigation_plan(
                 user_message=user_message,
@@ -635,6 +638,11 @@ class AIAgent:
             final_speech = ""
             
             for step in plan_steps:
+                # Check for interruption before each step
+                if self._plan_interrupted:
+                    print(f"[Agent] 🛑 Plan interrupted by user, stopping execution", flush=True)
+                    break
+                
                 step_num = step.get('step', 0)
                 step_action = step.get('action', '')
                 step_details = step.get('details', '')
@@ -661,7 +669,7 @@ class AIAgent:
                         if success:
                             print(f"[Agent] ✅ Navigated to '{step_details}'", flush=True)
                             print(f"[Agent] ⏳ Waiting 2s for page to fully load...", flush=True)
-                            await asyncio.sleep(1.0)  # Wait for page to load
+                            await asyncio.sleep(0.3)  # Wait for page to load
                         else:
                             print(f"[Agent] ❌ Failed to navigate to '{step_details}'", flush=True)
                     continue
@@ -669,19 +677,19 @@ class AIAgent:
                 # Handle direct click action from planner (clicks element by name)
                 if step_action == "click":
                     # Wait a moment for page to be ready before clicking
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
                     print(f"[Agent] 🖱️ Direct click: '{step_details}'", flush=True)
                     success = await self._browser_click(step_details)
                     if success:
                         print(f"[Agent] ✅ Clicked '{step_details}'", flush=True)
-                        await asyncio.sleep(0.5)  # Wait for navigation after click
+                        await asyncio.sleep(0.3)  # Wait for navigation after click
                     else:
                         print(f"[Agent] ❌ Failed to click '{step_details}'", flush=True)
                     continue
                 
                 # Get fresh page context before each action
                 if self.browser_session:
-                    await asyncio.sleep(0.5)  # Let page settle
+                    await asyncio.sleep(0.3)  # Let page settle
                     page_context = await self.browser_session.get_page_content()
                     current_url = page_context.get('url', '')
                     page_title = page_context.get('title', '')
@@ -716,7 +724,7 @@ class AIAgent:
                         if success:
                             print(f"[Agent] ✅ Navigated to '{nav_url}'", flush=True)
                             print(f"[Agent] ⏳ Waiting 2s for page to fully load...", flush=True)
-                            await asyncio.sleep(1.0)  # Wait for page to load
+                            await asyncio.sleep(0.3)  # Wait for page to load
                         else:
                             print(f"[Agent] ❌ Failed to navigate to '{nav_url}'", flush=True)
                     continue
@@ -726,36 +734,36 @@ class AIAgent:
                     success = await self._browser_click(element)
                     if success:
                         print(f"[Agent] ✅ Clicked '{element}'", flush=True)
-                        await asyncio.sleep(1.0)  # Wait for page to load
+                        await asyncio.sleep(0.3)  # Wait for page to load
                     else:
                         print(f"[Agent] ❌ Failed to click '{element}'", flush=True)
                         # Try fallback
                         fallback = execution.get('fallback_action', 'none')
                         if fallback == "go_back":
                             await self.browser_session.page.go_back()
-                            await asyncio.sleep(1.0)
+                            await asyncio.sleep(0.3)
                         elif fallback == "scroll_down":
                             await self.browser_session.scroll("down")
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(0.3)
                 
                 elif action_type == "go_back":
                     # Check if on dashboard - don't go back from there!
                     if "/dashboard" in current_url:
                         print(f"[Agent] ⚠️ On dashboard, can't go back (would go to login). Scrolling up instead.", flush=True)
                         await self.browser_session.scroll("up")
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.3)
                     else:
                         try:
                             await self.browser_session.page.go_back()
                             print(f"[Agent] ✅ Went back", flush=True)
-                            await asyncio.sleep(1.0)
+                            await asyncio.sleep(0.3)
                         except Exception as e:
                             print(f"[Agent] ❌ Go back failed: {e}", flush=True)
                 
                 elif action_type == "scroll_up":
                     await self.browser_session.scroll("up")
                     print(f"[Agent] ✅ Scrolled up", flush=True)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
                 
                 elif action_type == "speak":
                     speech = execution.get('speech', step_details)
@@ -765,7 +773,7 @@ class AIAgent:
                         final_speech = speech
             
             # Final response if we haven't spoken yet
-            if not first_speech_done:
+            if not first_speech_done and not self._plan_interrupted:
                 # Refresh screen context after navigation
                 if self.browser_session:
                     fresh_page = await self.browser_session.get_page_content()
@@ -783,12 +791,14 @@ class AIAgent:
                 await self._speak(final_speech)
             
             # === PHASE 3: POST-NAVIGATION RESPONSE ===
-            # Ask LLM if a follow-up response is needed after navigation
-            if target_section and self.browser_session:
+            # Skip if user interrupted
+            if self._plan_interrupted:
+                print(f"[Agent] 🛑 Skipping Phase 3 - user interrupted", flush=True)
+            elif target_section and self.browser_session:
                 print(f"\n[Agent] 💬 PHASE 3: Checking if explanation needed...", flush=True)
                 
                 # Get fresh page context after navigation
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
                 page_context = await self.browser_session.get_page_content()
                 self.presenter.update_page_context(page_context)
                 page_text = page_context.get('text_content', '')[:800]
@@ -844,6 +854,7 @@ class AIAgent:
             traceback.print_exc()
         finally:
             self.is_speaking = False
+            self._responding = False  # Done with response flow
     
     async def _generate_speech(
         self, 
@@ -1145,7 +1156,7 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
                             print(f"[Agent] ⚠️ Click may have failed, continuing...", flush=True)
                         else:
                             # Wait for page to update after successful click
-                            await asyncio.sleep(1.0)
+                            await asyncio.sleep(0.3)
                         
                 elif action.action_type == "navigate":
                     if action.target:
@@ -1160,12 +1171,12 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
                         print(f"[Agent] ⚠️ Go back failed: {e}", flush=True)
                         
                 elif action.action_type == "wait":
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(1)
                     print(f"[Agent] ✓ Waited", flush=True)
                 
                 # Small delay between actions for page to update
                 if i < len(actions) - 1:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.3)
                     
             except Exception as e:
                 print(f"[Agent] ❌ Action {i+1} failed: {e}", flush=True)
@@ -1193,7 +1204,7 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
                     success = await self._browser_click(action.target)
                     if success:
                         print(f"[Agent] ✓ Clicked successfully", flush=True)
-                        await asyncio.sleep(1.0)  # Wait for page update
+                        await asyncio.sleep(0.3)  # Wait for page update
                     else:
                         print(f"[Agent] ⚠️ Click may have failed", flush=True)
                     return success
@@ -1208,14 +1219,14 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
                 try:
                     await self.browser_session.page.go_back()
                     print(f"[Agent] ✓ Went back", flush=True)
-                    await asyncio.sleep(1.0)  # Wait for page to load
+                    await asyncio.sleep(0.3)  # Wait for page to load
                     return True
                 except Exception as e:
                     print(f"[Agent] ⚠️ Go back failed: {e}", flush=True)
                     return False
                     
             elif action.action_type == "wait":
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
                 print(f"[Agent] ✓ Waited", flush=True)
                 return True
                 
@@ -1232,7 +1243,7 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
         
         try:
             # Wait for page to stabilize after navigation/click
-            await asyncio.sleep(1.0)  # Give JS time to render
+            await asyncio.sleep(0.3)  # Give JS time to render
             
             page_context = await self.browser_session.get_page_content()
             self.presenter.update_page_context(page_context)
@@ -1262,7 +1273,7 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
             await self._speak("Sure! Let me give you a quick tour. One moment while I take you to the home page.")
             success = await self.browser_session.navigate(home_url)
             if success:
-                await asyncio.sleep(1.0)  # Wait for page to load
+                await asyncio.sleep(0.3)  # Wait for page to load
                 print(f"[Agent] ✓ Now on home page, starting demo", flush=True)
             else:
                 print(f"[Agent] ⚠️ Could not navigate to home, starting demo anyway", flush=True)
