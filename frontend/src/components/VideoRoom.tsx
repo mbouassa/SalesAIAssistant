@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { DailyCall, DailyParticipant } from '@daily-co/daily-js'
 import VideoTile from './VideoTile'
 import ControlButton from './ControlButton'
+import BrowserView from './BrowserView'
 import { 
   MicOnIcon, MicOffIcon, 
   VideoOnIcon, VideoOffIcon, 
@@ -14,9 +15,10 @@ interface VideoRoomProps {
   callObject: DailyCall
   participants: DailyParticipant[]
   onLeave: () => void
+  browserLiveUrl?: string
 }
 
-export default function VideoRoom({ roomName, callObject, participants, onLeave }: VideoRoomProps) {
+export default function VideoRoom({ roomName, callObject, participants, onLeave, browserLiveUrl }: VideoRoomProps) {
   const [isMuted, setIsMuted] = useState(false)
   const [isVideoOff, setIsVideoOff] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
@@ -86,74 +88,77 @@ export default function VideoRoom({ roomName, callObject, participants, onLeave 
 
       {/* Main Content */}
       <main className="relative z-10 flex-1 flex gap-4 p-4 overflow-hidden">
-        {/* Video Grid */}
-        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 auto-rows-fr">
-          {/* Local Participant */}
-          {localParticipant && (
-            <VideoTile
-              participant={localParticipant}
-              callObject={callObject}
-              isLocal={true}
-            />
-          )}
-          
-          {/* Remote Participants */}
-          {remoteParticipants.map((participant) => (
-            <VideoTile
-              key={participant.session_id}
-              participant={participant}
-              callObject={callObject}
-              isLocal={false}
-            />
-          ))}
-
-          {/* Empty state when alone */}
-          {remoteParticipants.length === 0 && (
-            <div className="rounded-2xl glass flex flex-col items-center justify-center p-8">
-              <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
-                <UserPlusIcon className="w-7 h-7 text-gray-500" />
+        {/* Browser View Mode (product demo) */}
+        {browserLiveUrl ? (
+          <div className="flex-1 min-w-0 relative">
+            {/* Full-width browser */}
+            <BrowserView liveUrl={browserLiveUrl} className="w-full h-full" />
+            
+            {/* User video tile - floating in bottom right corner */}
+            {localParticipant && (
+              <div className="absolute bottom-4 right-4 w-52 h-40 z-20">
+                <div className="w-full h-full rounded-xl overflow-hidden shadow-2xl border-2 border-white/20">
+                  <VideoTile
+                    participant={localParticipant}
+                    callObject={callObject}
+                    isLocal={true}
+                  />
+                </div>
               </div>
-              <p className="text-gray-400 text-sm font-medium mb-1">Waiting for others</p>
-              <button
-                onClick={copyLink}
-                className="mt-3 text-brand-400 hover:text-brand-300 text-sm font-medium flex items-center gap-1.5 transition-colors"
-              >
-                <LinkIcon className="w-4 h-4" />
-                Copy invite link
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Side Panel */}
-        <div className="hidden xl:flex w-72 flex-col gap-4">
-          {/* AI Agent Card */}
-          <div className="flex-1 bg-gradient-to-br from-brand-600 to-brand-800 rounded-2xl p-6 flex flex-col items-center justify-center relative overflow-hidden">
-            <div className="absolute inset-0 bg-[url('data:image/svg+xml,...')] opacity-10" />
-            <div className="relative z-10 text-center">
-              <div className="w-14 h-14 rounded-2xl bg-white/10 backdrop-blur-sm flex items-center justify-center mb-4 mx-auto">
-                <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
-              </div>
-              <p className="text-white font-semibold">AI Agent</p>
-              <p className="text-white/60 text-sm mt-1">Ready to demo</p>
+            )}
+            
+            {/* Hidden audio elements for remote participants (AI voice) */}
+            <div className="hidden">
+              {remoteParticipants.map((participant) => (
+                <VideoTile
+                  key={participant.session_id}
+                  participant={participant}
+                  callObject={callObject}
+                  isLocal={false}
+                />
+              ))}
             </div>
           </div>
+        ) : (
+          /* Standard Video Grid Mode (no browser) */
+          <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 auto-rows-fr">
+            {/* Local Participant */}
+            {localParticipant && (
+              <VideoTile
+                participant={localParticipant}
+                callObject={callObject}
+                isLocal={true}
+              />
+            )}
+            
+            {/* Remote Participants */}
+            {remoteParticipants.map((participant) => (
+              <VideoTile
+                key={participant.session_id}
+                participant={participant}
+                callObject={callObject}
+                isLocal={false}
+              />
+            ))}
 
-          {/* Chat */}
-          <div className="h-48 rounded-2xl glass p-4">
-            <div className="flex items-center gap-2 mb-3 pb-3 border-b border-white/10">
-              <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-              <span className="text-gray-400 text-sm font-medium">Chat</span>
-            </div>
-            <div className="flex-1 flex items-center justify-center h-24">
-              <p className="text-gray-600 text-xs">No messages yet</p>
-            </div>
+            {/* Empty state when alone */}
+            {remoteParticipants.length === 0 && (
+              <div className="rounded-2xl glass flex flex-col items-center justify-center p-8">
+                <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
+                  <UserPlusIcon className="w-7 h-7 text-gray-500" />
+                </div>
+                <p className="text-gray-400 text-sm font-medium mb-1">Waiting for others</p>
+                <button
+                  onClick={copyLink}
+                  className="mt-3 text-brand-400 hover:text-brand-300 text-sm font-medium flex items-center gap-1.5 transition-colors"
+                >
+                  <LinkIcon className="w-4 h-4" />
+                  Copy invite link
+                </button>
+              </div>
+            )}
           </div>
-        </div>
+        )}
       </main>
 
       {/* Controls Bar */}

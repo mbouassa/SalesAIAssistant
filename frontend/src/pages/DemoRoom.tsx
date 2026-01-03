@@ -19,8 +19,19 @@ export default function DemoRoom() {
   const [error, setError] = useState<string | null>(null)
   const [callObject, setCallObject] = useState<DailyCall | null>(null)
   const [participants, setParticipants] = useState<DailyParticipant[]>([])
+  const [browserLiveUrl, setBrowserLiveUrl] = useState<string | undefined>()
   
   const isJoiningRef = useRef(false)
+
+  // Check for browser session URL on mount
+  useEffect(() => {
+    if (roomName) {
+      const storedUrl = sessionStorage.getItem(`browser_${roomName}`)
+      if (storedUrl) {
+        setBrowserLiveUrl(storedUrl)
+      }
+    }
+  }, [roomName])
 
   const updateParticipants = useCallback((call: DailyCall | null) => {
     if (call) {
@@ -169,6 +180,7 @@ export default function DemoRoom() {
         callObject={callObject}
         participants={participants}
         onLeave={handleLeave}
+        browserLiveUrl={browserLiveUrl}
       />
     )
   }

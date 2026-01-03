@@ -26,6 +26,7 @@ from deepgram.extensions.types.sockets import ListenV2SocketClientResponse
 
 from app.services.llm_service import LLMService
 from app.services.tts_service import TTSService
+from app.services.browser_service import browser_service, BrowserSession
 from app.core.config import get_settings
 
 
@@ -85,7 +86,11 @@ class AIAgent:
         self.is_running = False
         self.is_speaking = False
         self.room_url: str = ""
+        self.room_name: str = ""
         self.token: str = ""
+        
+        # Browser session (if product demo)
+        self.browser_session: Optional[BrowserSession] = None
         
         # Transcript queue for async processing
         self._transcript_queue: asyncio.Queue = asyncio.Queue()
@@ -102,9 +107,6 @@ class AIAgent:
         self.room_url = room_url
         self.token = token
         self.is_running = True
-        
-        # Initialize conversation memory
-        await self.llm.set_room(room_name)
         
         try:
             # Initialize Daily (only once)
@@ -171,6 +173,9 @@ class AIAgent:
             # Set user name
             self.client.set_user_name("AI Assistant")
             
+            # Small delay to let Daily threads stabilize after join
+            await asyncio.sleep(0.5)
+            
             # Force update inputs to ensure mic is active
             update_event = threading.Event()
             
@@ -189,6 +194,9 @@ class AIAgent:
             }, completion=on_inputs_updated)
             update_event.wait(timeout=5)
             
+            # Delay between updates to avoid race conditions in native code
+            await asyncio.sleep(0.3)
+            
             # Force update publishing
             pub_event = threading.Event()
             
@@ -204,8 +212,9 @@ class AIAgent:
             }, completion=on_pub_updated)
             pub_event.wait(timeout=5)
             
-            # Wait for WebRTC to stabilize
-            await asyncio.sleep(1)
+            # Wait for WebRTC and Daily native threads to stabilize
+            print("[Agent] Waiting for WebRTC to stabilize...", flush=True)
+            await asyncio.sleep(2)
             
             # Subscribe to all participants' audio
             self.client.update_subscription_profiles({
@@ -214,6 +223,26 @@ class AIAgent:
                     "microphone": "subscribed",
                 }
             })
+            
+            # Now safe to initialize Firebase/memory (after Daily is stable)
+            print("[Agent] Initializing conversation memory...", flush=True)
+            await self.llm.set_room(room_name)
+            
+            # Check for browser session (product demo mode)
+            self.browser_session = browser_service.get_session(room_name)
+            if self.browser_session:
+                print(f"[Agent] 🌐 Browser session found for product demo", flush=True)
+                page_context = await self.browser_session.get_page_content()
+                self.llm.set_browser_context(
+                    page_context=page_context,
+                    action_handlers={
+                        "scroll_page": self._browser_scroll,
+                        "click_element": self._browser_click,
+                    }
+                )
+            
+            # Another small delay before starting pipeline
+            await asyncio.sleep(0.5)
             
             # Start the audio pipeline (no test tone)
             await self._start_pipeline()
@@ -434,6 +463,30 @@ class AIAgent:
         finally:
             self.is_speaking = False
     
+    async def _browser_scroll(self, direction: str) -> None:
+        """Handle scroll action from LLM."""
+        if self.browser_session:
+            await self.browser_session.scroll(direction)
+    
+    async def _browser_click(self, element_text: str) -> None:
+        """Handle click action from LLM - finds element by text."""
+        if not self.browser_session:
+            return
+        
+        # Try to find and click element with matching text
+        # Use XPath to find by text content
+        selectors = [
+            f"button:has-text('{element_text}')",
+            f"a:has-text('{element_text}')",
+            f"[role='button']:has-text('{element_text}')",
+        ]
+        
+        for selector in selectors:
+            if await self.browser_session.click(selector):
+                return
+        
+        print(f"[Agent] Could not find element with text: {element_text}", flush=True)
+    
     async def leave_room(self) -> None:
         """Leave the current room and clean up."""
         print("[Agent] Leaving room...")
@@ -442,11 +495,19 @@ class AIAgent:
         # Deepgram connection will be closed by context manager
         self._dg_connection = None
         
-        # Leave Daily call
+        # Leave Daily call with proper cleanup
         if self.client:
-            self.client.leave()
-            self.client.release()
+            try:
+                self.client.leave()
+                await asyncio.sleep(0.5)  # Let leave complete
+                self.client.release()
+            except Exception as e:
+                print(f"[Agent] Leave error (ignoring): {e}", flush=True)
             self.client = None
+        
+        # Clean up virtual devices
+        self.mic = None
+        self.speaker = None
         
         self.llm.reset_conversation()
         print("[Agent] ✓ Left room")
@@ -464,8 +525,12 @@ async def spawn_agent(room_name: str, room_url: str, token: str) -> AIAgent:
         try:
             old_agent = _active_agents.pop(room_name)
             await old_agent.leave_room()
+            # Wait for Daily SDK to fully release resources
+            await asyncio.sleep(2)
+            print("[Agent] Cleanup complete, spawning new agent...", flush=True)
         except Exception as e:
             print(f"[Agent] Cleanup error (ignoring): {e}", flush=True)
+            await asyncio.sleep(1)
     
     agent = AIAgent()
     _active_agents[room_name] = agent

@@ -6,6 +6,7 @@ export default function HomePage() {
   const navigate = useNavigate()
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [productUrl, setProductUrl] = useState('')
 
   const handleCreateRoom = async () => {
     setIsCreating(true)
@@ -15,7 +16,14 @@ export default function HomePage() {
       const room = await roomsApi.createRoom({
         privacy: 'private',
         expires_in_minutes: 60,
+        product_url: productUrl.trim() || undefined,
       })
+      
+      // Store browser_live_url in sessionStorage for the room
+      if (room.browser_live_url) {
+        sessionStorage.setItem(`browser_${room.name}`, room.browser_live_url)
+      }
+      
       navigate(`/room/${room.name}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create room')
@@ -51,12 +59,29 @@ export default function HomePage() {
           {/* Glass card container */}
           <div className="p-8 sm:p-10 rounded-3xl glass">
             {/* Header */}
-            <div className="text-center mb-10">
+            <div className="text-center mb-8">
               <h1 className="text-3xl sm:text-4xl font-bold text-white mb-4">
-                AI Demo Agent
+                AI Sales Demo
               </h1>
               <p className="text-gray-400 leading-relaxed">
-                Start a new demo session with an AI-powered sales agent.
+                Enter a product URL to start a live AI-powered sales demo.
+              </p>
+            </div>
+
+            {/* Product URL Input */}
+            <div className="mb-6">
+              <label className="block text-sm text-gray-400 mb-2">
+                Product Page URL <span className="text-gray-600">(optional)</span>
+              </label>
+              <input
+                type="url"
+                value={productUrl}
+                onChange={(e) => setProductUrl(e.target.value)}
+                placeholder="https://example.com/product"
+                className="w-full px-5 py-4 rounded-xl bg-white/5 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500/50 transition-all"
+              />
+              <p className="text-xs text-gray-600 mt-2">
+                The AI will control and demo this product page live
               </p>
             </div>
 

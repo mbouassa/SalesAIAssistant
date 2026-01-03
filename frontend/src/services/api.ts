@@ -11,6 +11,7 @@ export interface CreateRoomRequest {
   name?: string
   privacy?: 'public' | 'private'
   expires_in_minutes?: number
+  product_url?: string
 }
 
 /**
@@ -22,6 +23,8 @@ export interface RoomResponse {
   url: string
   privacy: string
   created_at: string
+  product_url?: string
+  browser_live_url?: string
 }
 
 /**

@@ -1,25 +1,40 @@
 """
 Memory Service using Firebase Firestore.
 Persists conversation history per room.
+
+NOTE: Firebase imports are lazy to avoid gRPC threading conflicts with Daily SDK.
 """
 
 import os
 from datetime import datetime
-from typing import Optional
-import firebase_admin
-from firebase_admin import credentials, firestore
+from typing import Optional, Any, TYPE_CHECKING
 
-# Initialize Firebase once
+# Type hints only - no runtime import
+if TYPE_CHECKING:
+    from google.cloud.firestore import Client
+
+# Initialize Firebase once (lazy)
 _firebase_initialized = False
-_db = None
+_db: Optional["Client"] = None
+_firestore_module: Any = None  # Store reference to firestore module
 
 
-def _ensure_firebase_init():
-    """Initialize Firebase Admin SDK."""
-    global _firebase_initialized, _db
+def _ensure_firebase_init() -> Optional["Client"]:
+    """Initialize Firebase Admin SDK (lazy import to avoid gRPC conflicts)."""
+    global _firebase_initialized, _db, _firestore_module
     
     if _firebase_initialized:
         return _db
+    
+    # Lazy import to avoid loading gRPC until we actually need Firebase
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore
+        _firestore_module = firestore  # Store reference for use elsewhere
+    except ImportError as e:
+        print(f"[Memory] ⚠️ Firebase not installed: {e}")
+        _firebase_initialized = True
+        return None
     
     # Look for credentials file
     cred_path = os.path.join(
@@ -29,18 +44,30 @@ def _ensure_firebase_init():
     
     if not os.path.exists(cred_path):
         print(f"[Memory] ⚠️ Firebase credentials not found at {cred_path}")
+        _firebase_initialized = True  # Mark as "tried" to avoid repeated attempts
         return None
     
     try:
-        cred = credentials.Certificate(cred_path)
-        firebase_admin.initialize_app(cred)
+        # Check if already initialized
+        try:
+            firebase_admin.get_app()
+        except ValueError:
+            cred = credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred)
+        
         _db = firestore.client()
         _firebase_initialized = True
         print("[Memory] ✓ Firebase initialized", flush=True)
         return _db
     except Exception as e:
         print(f"[Memory] ❌ Firebase init failed: {e}", flush=True)
+        _firebase_initialized = True
         return None
+
+
+def _get_firestore():
+    """Get the firestore module (must be called after init)."""
+    return _firestore_module
 
 
 class MemoryService:
@@ -71,6 +98,10 @@ class MemoryService:
     async def load_history(self) -> list[dict]:
         """Load recent conversation history from Firestore."""
         if not self._messages_ref:
+            return []
+        
+        firestore = _get_firestore()
+        if not firestore:
             return []
         
         try:
@@ -105,6 +136,11 @@ class MemoryService:
         """Add a message to conversation history."""
         if not self._messages_ref:
             # Fallback: just cache locally
+            self._messages_cache.append({"role": role, "content": content})
+            return
+        
+        firestore = _get_firestore()
+        if not firestore:
             self._messages_cache.append({"role": role, "content": content})
             return
         

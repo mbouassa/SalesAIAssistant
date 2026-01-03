@@ -88,7 +88,7 @@ export default function VideoTile({ participant, callObject, isLocal }: VideoTil
   const userName = participant.user_name || (isLocal ? 'You' : 'Guest')
 
   return (
-    <div className="relative rounded-2xl glass overflow-hidden">
+    <div className="relative rounded-2xl glass overflow-hidden h-full min-h-[120px]">
       {/* Video Element */}
       <video
         ref={videoRef}

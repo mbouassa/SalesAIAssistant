@@ -13,6 +13,7 @@ from app.models.room import (
     RoomTokenResponse,
 )
 from app.services.daily_service import daily_service
+from app.services.browser_service import browser_service
 
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
@@ -23,7 +24,8 @@ async def create_room(request: RoomCreateRequest) -> RoomResponse:
     """
     Create a new Daily.co room for a demo session.
     
-    Returns the room details including the join URL.
+    If product_url is provided, creates a Browserbase session for live demo.
+    Returns the room details including the join URL and browser live view URL.
     """
     try:
         room_data = await daily_service.create_room(
@@ -32,6 +34,20 @@ async def create_room(request: RoomCreateRequest) -> RoomResponse:
             expires_in_minutes=request.expires_in_minutes
         )
         
+        browser_live_url = None
+        
+        # If product URL provided, create browser session
+        if request.product_url:
+            try:
+                browser_session = await browser_service.create_session(
+                    room_name=room_data["name"],
+                    product_url=request.product_url
+                )
+                browser_live_url = browser_session.live_view_url
+            except Exception as e:
+                print(f"[Rooms] Browser session creation failed: {e}", flush=True)
+                # Continue without browser - don't fail room creation
+        
         return RoomResponse(
             id=room_data["id"],
             name=room_data["name"],
@@ -39,7 +55,9 @@ async def create_room(request: RoomCreateRequest) -> RoomResponse:
             privacy=room_data["privacy"],
             created_at=datetime.fromisoformat(
                 room_data["created_at"].replace("Z", "+00:00")
-            )
+            ),
+            product_url=request.product_url,
+            browser_live_url=browser_live_url
         )
     except Exception as e:
         raise HTTPException(

@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # ElevenLabs (TTS)
     elevenlabs_api_key: str = ""
     
+    # Browserbase (Browser automation)
+    browserbase_api_key: str = ""
+    browserbase_project_id: str = ""
+    
     # CORS
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"]
     

@@ -23,6 +23,10 @@ class RoomCreateRequest(BaseModel):
         le=1440,
         description="Room expiration time in minutes (1-1440)"
     )
+    product_url: str | None = Field(
+        default=None,
+        description="URL of the product page to demo (enables browser sharing)"
+    )
 
 
 class RoomResponse(BaseModel):
@@ -33,6 +37,8 @@ class RoomResponse(BaseModel):
     url: str
     privacy: str
     created_at: datetime
+    product_url: str | None = None
+    browser_live_url: str | None = None
     
     class Config:
         from_attributes = True
