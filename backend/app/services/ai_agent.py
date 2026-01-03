@@ -94,13 +94,17 @@ class AIAgent:
         self._dg_connection = None
         self._dg_task = None
     
-    async def join_room(self, room_url: str, token: str) -> None:
+    async def join_room(self, room_name: str, room_url: str, token: str) -> None:
         """Join a Daily room as an AI participant."""
         print(f"[Agent] Joining room: {room_url}", flush=True)
         
+        self.room_name = room_name
         self.room_url = room_url
         self.token = token
         self.is_running = True
+        
+        # Initialize conversation memory
+        await self.llm.set_room(room_name)
         
         try:
             # Initialize Daily (only once)
@@ -264,6 +268,12 @@ class AIAgent:
                             transcript = message.transcript.strip()
                             if transcript:
                                 print(f"[Agent] 🎤 Heard: '{transcript}'", flush=True)
+                                
+                                # Barge-in: stop AI if it's speaking
+                                if self.is_speaking:
+                                    print("[Agent] 🛑 User interrupted - stopping speech", flush=True)
+                                    self.is_speaking = False
+                                
                                 # Put transcript in queue for processing
                                 asyncio.create_task(self._transcript_queue.put(transcript))
                         
@@ -329,8 +339,8 @@ class AIAgent:
         """Process transcripts and generate responses."""
         print("[Agent] Starting transcript processing loop...")
         
-        # Buffer to accumulate partial transcripts
-        transcript_buffer = ""
+        # Keep only the latest transcript (Flux sends cumulative partials)
+        latest_transcript = ""
         last_transcript_time = asyncio.get_event_loop().time()
         
         while self.is_running:
@@ -341,23 +351,23 @@ class AIAgent:
                         self._transcript_queue.get(),
                         timeout=0.3
                     )
-                    transcript_buffer += " " + transcript
-                    transcript_buffer = transcript_buffer.strip()
+                    # Replace with latest (Flux partials are cumulative, not diffs)
+                    latest_transcript = transcript.strip()
                     last_transcript_time = asyncio.get_event_loop().time()
                     
                 except asyncio.TimeoutError:
-                    # Check if we should process accumulated buffer
+                    # Check if we should process the transcript
                     # (1 second of silence after last transcript)
                     current_time = asyncio.get_event_loop().time()
                     time_since_last = current_time - last_transcript_time
                     
-                    if transcript_buffer and time_since_last > 1.0 and not self.is_speaking:
-                        # Process the accumulated transcript
-                        full_transcript = transcript_buffer.strip()
-                        transcript_buffer = ""
+                    if latest_transcript and time_since_last > 1.0 and not self.is_speaking:
+                        # Process the final transcript
+                        final_message = latest_transcript
+                        latest_transcript = ""
                         
-                        if len(full_transcript) > 2:  # Minimum length check
-                            await self._respond(full_transcript)
+                        if len(final_message) > 2:  # Minimum length check
+                            await self._respond(final_message)
                     
                     continue
                     
@@ -393,8 +403,11 @@ class AIAgent:
                     chunk_bytes = samples_per_chunk * 2  # 3200 bytes
                     
                     chunks_sent = 0
+                    interrupted = False
                     for i in range(0, len(audio_data), chunk_bytes):
-                        if not self.is_running:
+                        # Stop if user interrupted (barge-in) or agent is shutting down
+                        if not self.is_speaking or not self.is_running:
+                            interrupted = True
                             break
                         chunk = audio_data[i:i + chunk_bytes]
                         try:
@@ -404,10 +417,13 @@ class AIAgent:
                         except Exception as e:
                             print(f"[Agent] ❌ Audio write error: {e}", flush=True)
                             break
-                    return chunks_sent
+                    return (chunks_sent, interrupted)
                 
-                chunks_sent = await asyncio.to_thread(write_audio_sync)
-                print(f"[Agent] ✓ Finished speaking ({chunks_sent} chunks)", flush=True)
+                chunks_sent, interrupted = await asyncio.to_thread(write_audio_sync)
+                if interrupted:
+                    print(f"[Agent] ⏹️ Speech interrupted after {chunks_sent} chunks", flush=True)
+                else:
+                    print(f"[Agent] ✓ Finished speaking ({chunks_sent} chunks)", flush=True)
             else:
                 print(f"[Agent] ⚠️ Cannot send audio: mic={self.mic is not None}", flush=True)
                 
@@ -457,7 +473,7 @@ async def spawn_agent(room_name: str, room_url: str, token: str) -> AIAgent:
     # Run in background task with error handling
     async def run_agent():
         try:
-            await agent.join_room(room_url, token)
+            await agent.join_room(room_name, room_url, token)
         except Exception as e:
             print(f"[Agent] ❌ Agent task failed: {e}", flush=True)
             import traceback

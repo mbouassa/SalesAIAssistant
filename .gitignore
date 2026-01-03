@@ -37,6 +37,10 @@ htmlcov/
 .env.local
 .env.*.local
 
+# Firebase credentials (NEVER commit these!)
+firebase-credentials.json
+*-credentials.json
+
 # TypeScript
 *.tsbuildinfo
 

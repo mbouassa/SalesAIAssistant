@@ -26,5 +26,8 @@ elevenlabs==1.5.0
 # Audio processing
 numpy==1.26.4
 
+# Firebase (conversation memory)
+firebase-admin==6.4.0
+
 # Development
 python-dotenv==1.0.1

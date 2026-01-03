@@ -1,0 +1,152 @@
+"""
+Memory Service using Firebase Firestore.
+Persists conversation history per room.
+"""
+
+import os
+from datetime import datetime
+from typing import Optional
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# Initialize Firebase once
+_firebase_initialized = False
+_db = None
+
+
+def _ensure_firebase_init():
+    """Initialize Firebase Admin SDK."""
+    global _firebase_initialized, _db
+    
+    if _firebase_initialized:
+        return _db
+    
+    # Look for credentials file
+    cred_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        "firebase-credentials.json"
+    )
+    
+    if not os.path.exists(cred_path):
+        print(f"[Memory] ⚠️ Firebase credentials not found at {cred_path}")
+        return None
+    
+    try:
+        cred = credentials.Certificate(cred_path)
+        firebase_admin.initialize_app(cred)
+        _db = firestore.client()
+        _firebase_initialized = True
+        print("[Memory] ✓ Firebase initialized", flush=True)
+        return _db
+    except Exception as e:
+        print(f"[Memory] ❌ Firebase init failed: {e}", flush=True)
+        return None
+
+
+class MemoryService:
+    """
+    Manages conversation history in Firestore.
+    
+    Structure:
+    conversations/{room_name}/messages/{message_id}
+        - role: "user" | "assistant"
+        - content: str
+        - timestamp: datetime
+    """
+    
+    MAX_MESSAGES = 20  # Limit context sent to LLM
+    
+    def __init__(self, room_name: str):
+        self.room_name = room_name
+        self.db = _ensure_firebase_init()
+        self._messages_cache: list[dict] = []
+    
+    @property
+    def _messages_ref(self):
+        """Get reference to messages subcollection."""
+        if not self.db:
+            return None
+        return self.db.collection("conversations").document(self.room_name).collection("messages")
+    
+    async def load_history(self) -> list[dict]:
+        """Load recent conversation history from Firestore."""
+        if not self._messages_ref:
+            return []
+        
+        try:
+            # Get last N messages ordered by timestamp
+            docs = (
+                self._messages_ref
+                .order_by("timestamp", direction=firestore.Query.DESCENDING)
+                .limit(self.MAX_MESSAGES)
+                .stream()
+            )
+            
+            messages = []
+            for doc in docs:
+                data = doc.to_dict()
+                messages.append({
+                    "role": data.get("role", "user"),
+                    "content": data.get("content", ""),
+                })
+            
+            # Reverse to get chronological order
+            messages.reverse()
+            self._messages_cache = messages
+            
+            print(f"[Memory] Loaded {len(messages)} messages for room '{self.room_name}'", flush=True)
+            return messages
+            
+        except Exception as e:
+            print(f"[Memory] Error loading history: {e}", flush=True)
+            return []
+    
+    async def add_message(self, role: str, content: str) -> None:
+        """Add a message to conversation history."""
+        if not self._messages_ref:
+            # Fallback: just cache locally
+            self._messages_cache.append({"role": role, "content": content})
+            return
+        
+        try:
+            # Add to Firestore
+            self._messages_ref.add({
+                "role": role,
+                "content": content,
+                "timestamp": firestore.SERVER_TIMESTAMP,
+            })
+            
+            # Update local cache
+            self._messages_cache.append({"role": role, "content": content})
+            
+            # Trim cache to max size
+            if len(self._messages_cache) > self.MAX_MESSAGES:
+                self._messages_cache = self._messages_cache[-self.MAX_MESSAGES:]
+                
+        except Exception as e:
+            print(f"[Memory] Error saving message: {e}", flush=True)
+            # Still cache locally
+            self._messages_cache.append({"role": role, "content": content})
+    
+    def get_messages_for_llm(self) -> list[dict]:
+        """Get messages formatted for OpenAI API."""
+        return self._messages_cache.copy()
+    
+    async def clear_history(self) -> None:
+        """Clear all messages for this room."""
+        if not self._messages_ref:
+            self._messages_cache = []
+            return
+        
+        try:
+            # Delete all documents in subcollection
+            docs = self._messages_ref.stream()
+            for doc in docs:
+                doc.reference.delete()
+            
+            self._messages_cache = []
+            print(f"[Memory] Cleared history for room '{self.room_name}'", flush=True)
+            
+        except Exception as e:
+            print(f"[Memory] Error clearing history: {e}", flush=True)
+
