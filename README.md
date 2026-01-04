@@ -49,7 +49,80 @@ An AI-powered sales agent that conducts live product demonstrations via video ca
 
 ## 🤖 Agentic AI Architecture
 
-The AI uses a layered architecture where specialized services work together:
+The AI uses a layered architecture where specialized services work together. This is a **real-time voice agent** that listens, thinks, acts, and speaks—all concurrently.
+
+### Core Agent Loop
+
+The agent runs a continuous audio pipeline with concurrent processing:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           REAL-TIME AUDIO PIPELINE                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Daily.co Call                Deepgram Flux              Response          │
+│   ┌─────────┐                  ┌─────────┐               ┌─────────┐       │
+│   │ Virtual │   raw audio      │  STT +  │  transcript   │ Orchestr│       │
+│   │ Speaker │ ──────────────▶  │  Turn   │ ───────────▶  │  ator   │       │
+│   │ Device  │   (16kHz PCM)    │ Detect  │   (queue)     │         │       │
+│   └─────────┘                  └─────────┘               └────┬────┘       │
+│                                                               │             │
+│   ┌─────────┐                  ┌─────────┐               ┌────▼────┐       │
+│   │ Virtual │   TTS audio      │Eleven   │   text        │  LLM    │       │
+│   │   Mic   │ ◀──────────────  │  Labs   │ ◀───────────  │ + Plan  │       │
+│   │ Device  │   (streamed)     │   TTS   │               │         │       │
+│   └─────────┘                  └─────────┘               └─────────┘       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Three concurrent loops run simultaneously:**
+1. **Audio Receive Loop** (`_audio_receive_loop`): Captures audio from Daily virtual speaker, sends to Deepgram
+2. **Transcript Process Loop** (`_transcript_process_loop`): Monitors transcript queue, triggers response after 1s silence
+3. **Deepgram Listener** (`_run_deepgram_listener`): Receives STT results and turn detection events
+
+**Turn Detection**: Deepgram Flux detects when the user stops speaking (end-of-turn). The agent waits 1 second of silence before responding, allowing for natural pauses.
+
+### Decision Hierarchy
+
+When a user speaks, the agent checks intents in **priority order**:
+
+```
+User speaks: "Sure, that sounds good"
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  1. CALENDLY ACTIVE?                                            │
+│     └─ awaiting_scheduling_confirmation? → Open calendar        │
+│     └─ awaiting_confirmation? → Process booking                 │
+│     └─ awaiting_info? → Fill form fields                        │
+│     └─ on_calendly? → Handle time selection                     │
+└─────────────────────────────────────────────────────────────────┘
+                    │ no
+                    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  2. DEMO INTENT?                                                │
+│     └─ LLM checks: "Does user want a FULL product tour?"        │
+│     └─ If yes → Run scripted playbook                           │
+└─────────────────────────────────────────────────────────────────┘
+                    │ no
+                    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  3. CLOSING INTENT?                                             │
+│     └─ LLM checks: "Is user done/wrapping up?"                  │
+│     └─ If yes → Offer to schedule call with founder             │
+└─────────────────────────────────────────────────────────────────┘
+                    │ no
+                    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  4. NAVIGATION / CONVERSATION                                   │
+│     └─ Get page context from browser                            │
+│     └─ Planner creates navigation plan (or speech-only)         │
+│     └─ Execute plan steps                                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Service Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -124,6 +197,8 @@ User: "Show me the meditation section"
 ┌─────────────────────────────────────┐
 │  PHASE 2: Execute Plan Steps        │
 │                                     │
+│  • Check for interruption before    │
+│    each step (_plan_interrupted)    │
 │  • Speak pre-navigation message     │
 │  • Browser clicks "Listen Now"      │
 │  • Wait for page to load            │
@@ -139,6 +214,65 @@ User: "Show me the meditation section"
 │  • Ask follow-up question           │
 └─────────────────────────────────────┘
 ```
+
+### Demo Mode vs Freestyle Mode
+
+The agent operates in two distinct modes:
+
+#### **Freestyle Mode** (Default)
+User-driven exploration with LLM planning on-the-fly:
+- User: "Take me to the journaling section"
+- Planner analyzes page, creates navigation plan
+- Agent speaks → clicks → waits → explains new screen
+
+#### **Demo Mode** (Playbook)
+Scripted product tour with parallel execution:
+- Triggered by: "Give me a demo" / "Show me everything"
+- Loads YAML playbook with predefined steps
+- **Parallel execution**: Browser action + LLM narration generation happen simultaneously
+- Each step: navigate → narrate (while generating next narration)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  DEMO MODE: Parallel Action + Narration                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Step 1:  [Click "Features"] ──────────────────────────────▶   │
+│           [Generate narration for step 1] ─────────────────▶   │
+│                                                                 │
+│  Step 2:  [Wait for page] [Speak step 1 narration] ────────▶   │
+│           [Generate narration for step 2] ─────────────────▶   │
+│                                                                 │
+│  Step 3:  [Click "Pricing"] [Speak step 2 narration] ──────▶   │
+│           ... and so on                                         │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Barge-In & Interruption Handling
+
+The agent supports **barge-in**—users can interrupt at any time:
+
+```python
+# In _transcript_process_loop, when user speaks during AI action:
+if self.is_speaking or self._responding:
+    self._plan_interrupted = True  # Signal to stop current plan
+    
+# In Phase 2 execution, before each step:
+for step in plan_steps:
+    if self._plan_interrupted:
+        print("Plan interrupted by user, stopping execution")
+        break  # Stop executing, process new user input
+```
+
+**How it works:**
+1. User speaks while AI is executing a plan
+2. Deepgram detects speech, queues transcript
+3. `_plan_interrupted` flag is set to `True`
+4. Current plan execution stops at next step boundary
+5. New user message is processed immediately
+
+This allows natural conversation flow—users don't have to wait for the AI to finish before speaking.
 
 ## 🛠️ Tech Stack
 
