@@ -23,7 +23,7 @@ When you join, you'll see a browser showing the Healing Path login page. **Sign 
 - **Email:** `mb5165@columbia.edu`
 - **Password:** `StU111@2015`
 
-> ⚠️ **Don't speak until you've signed in!** The AI expects to start on the dashboard, not the login page. Once logged in, say "Hi" or "Give me a demo" to get started.
+> ⚠️ **Don't speak until you've signed in!** The AI expects to start on the dashboard, not the login page. The AI will speak first asking you if you want a demo. You can reply to that once logged in.
 
 ---
 
