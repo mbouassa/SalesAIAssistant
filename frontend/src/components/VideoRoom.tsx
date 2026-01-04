@@ -99,7 +99,7 @@ export default function VideoRoom({ roomName, callObject, participants, onLeave,
   const toggleVideo = useCallback(async () => {
     if (isVideoOff) {
       // Turn camera ON - need to start the video input
-      await callObject.setInputDevicesAsync({ videoSource: true })
+      await callObject.setInputDevicesAsync({ videoSource: 'default' as unknown as MediaStreamTrack })
       callObject.setLocalVideo(true)
     } else {
       // Turn camera OFF
