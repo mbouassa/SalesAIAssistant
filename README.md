@@ -709,7 +709,7 @@ Firebase Firestore stores conversation history per room, allowing the AI to main
 - **Solutions**: Parallelize intent checks with a single multi-label classifier; use streaming or local TTS (Piper, Coqui)
 
 ### 👁️ No Vision (VLM)
-- AI can't "see" the screen—relies on DOM text extraction only
+- AI can't "see" the screen, relies on DOM text extraction only
 - Misses visual context: images, charts, layout, colors, popups
 - **Solution**: Add screenshot → GPT-4V/Claude Vision pipeline for richer understanding
 
@@ -719,7 +719,7 @@ Firebase Firestore stores conversation history per room, allowing the AI to main
 - **Solution**: Custom cursor overlay in browser, or wait for Browserbase's cursor feature
 
 ### 🎯 Demos Are Not Personalized
-- Current playbooks are preset—same demo for everyone
+- Current playbooks are preset, same demo for everyone
 - Doesn't adapt to user's specific pain points or industry
 - **Solution**: Add discovery phase at start ("What are your main challenges?") and dynamically tailor the demo flow based on responses
 
