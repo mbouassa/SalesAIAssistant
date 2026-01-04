@@ -236,6 +236,68 @@ User: "Show me the meditation section"
 └─────────────────────────────────────┘
 ```
 
+### How the Planner Creates Navigation Plans
+
+The Planner is an LLM that receives rich context from both **YAML configuration files** and **live page state** to make intelligent decisions.
+
+#### Context Injected into the Planner Prompt
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    PLANNER LLM PROMPT CONTEXT                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  FROM PERSONA YAML (static config):                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  • persona_name: "Maya"                                              │   │
+│  │  • persona_tone: "warm, empathetic, spiritually-minded"              │   │
+│  │  • persona_style: "uses gentle language, asks reflective questions" │   │
+│  │  • persona_product: "Healing Path - inner child healing app"        │   │
+│  │  • site_map: [{section: "meditation", keywords: [...], button: ...}]│   │
+│  │  • home_url: "https://healing-path.vercel.app/dashboard"            │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  FROM LIVE PAGE (runtime extraction via Perception):                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  • available_elements: ["Listen Now", "Sacred Library", "Reply"]    │   │
+│  │  • current_url: "https://healing-path.vercel.app/dashboard"         │   │
+│  │  • page_title: "Your Journey - Healing Path"                        │   │
+│  │  • is_on_home_page: true/false (LLM-detected)                       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  FROM CONVERSATION (memory):                                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  • Recent 6 messages for context                                    │   │
+│  │  • Helps interpret "Sure" as response to previous AI question       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  USER REQUEST: "Show me the meditation section"                             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         PLANNER OUTPUT (JSON)                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  {                                                                          │
+│    "goal": "Navigate to meditation section",                                │
+│    "target_section": "meditation",                                          │
+│    "plan": [                                                                │
+│      {"step": 1, "action": "speak", "details": "Let me show you that!"},   │
+│      {"step": 2, "action": "click", "details": "Listen Now"},              │
+│      {"step": 3, "action": "done", "details": null}                        │
+│    ]                                                                        │
+│  }                                                                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Two-Phase Execution
+
+1. **Plan Creation** (`create_navigation_plan`): LLM analyzes user request + page state → outputs JSON plan
+2. **Plan Execution** (`execute_plan_step`): For each step, LLM maps action to exact clickable element
+
+This separation allows the Planner to think strategically (what to do) while the Executor handles tactical decisions (which exact button to click).
+
 ### Demo Mode vs Freestyle Mode
 
 The agent operates in two distinct modes:
