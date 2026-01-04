@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     # Daily.co
     daily_api_key: str = ""
     daily_api_url: str = "https://api.daily.co/v1"
-    
+    #
     # Deepgram (Speech-to-Text)
     deepgram_api_key: str = ""
     
