@@ -421,7 +421,8 @@ class AIAgent:
                     self._run_deepgram_listener(connection),
                     self._audio_receive_loop(),
                     self._transcript_process_loop(),
-                    self._heartbeat_loop(),  # Keep WebSocket alive
+                    self._heartbeat_loop(),  # Keep Daily WebSocket alive
+                    self._browser_heartbeat_loop(),  # Keep Browserbase CDP WebSocket alive
                 )
                 
         except Exception as e:
@@ -525,6 +526,32 @@ class AIAgent:
             except Exception as e:
                 if self.is_running:
                     print(f"[Agent] Heartbeat error (continuing): {e}", flush=True)
+    
+    async def _browser_heartbeat_loop(self) -> None:
+        """Send periodic heartbeat to keep Browserbase CDP WebSocket alive."""
+        print("[Agent] 🌐 Starting browser heartbeat loop (every 30s)...")
+        heartbeat_count = 0
+        
+        while self.is_running:
+            try:
+                await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+                
+                if not self.is_running:
+                    break
+                
+                # Only heartbeat if we have an active browser session
+                if self.browser_session and self.browser_session.page:
+                    heartbeat_count += 1
+                    
+                    # Force CDP traffic by executing a no-op JavaScript
+                    # This keeps the Playwright/CDP WebSocket alive
+                    await self.browser_session.page.evaluate("1+1")
+                    
+                    print(f"[Agent] 🌐 Browser heartbeat #{heartbeat_count}", flush=True)
+                    
+            except Exception as e:
+                if self.is_running:
+                    print(f"[Agent] Browser heartbeat error (continuing): {e}", flush=True)
     
     # =========================================================================
     # RESPONSE ORCHESTRATION (Main conversation flow)
