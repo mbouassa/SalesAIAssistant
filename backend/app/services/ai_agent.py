@@ -123,6 +123,10 @@ class AIAgent:
         self._plan_interrupted: bool = False  # True when user interrupts during plan execution
         self._responding: bool = False  # True while in _respond() method
         self._awaiting_scheduling_confirmation: bool = False  # True when waiting for user to confirm scheduling
+        self._on_calendly: bool = False  # True when on Calendly page for scheduling
+        self._awaiting_calendly_info: bool = False  # True when waiting for name/email for Calendly
+        self._awaiting_calendly_confirmation: bool = False  # True when waiting for user to confirm booking
+        self._calendly_user_info: dict = {}  # Store name/email for confirmation
         
         # Browser session (if product demo)
         self.browser_session: Optional[BrowserSession] = None
@@ -488,6 +492,24 @@ class AIAgent:
                     self._awaiting_scheduling_confirmation = False
                     await self._speak("No problem at all! Feel free to reach out anytime. Take care!")
                     return
+            
+            # === CHECK FOR CALENDLY BOOKING CONFIRMATION ===
+            if self._awaiting_calendly_confirmation and self.browser_session:
+                print(f"[Agent] 📅 Processing Calendly confirmation", flush=True)
+                await self._handle_calendly_confirmation(user_message)
+                return
+            
+            # === CHECK FOR CALENDLY FORM FILLING ===
+            if self._awaiting_calendly_info and self.browser_session:
+                print(f"[Agent] 📅 Processing Calendly form info", flush=True)
+                await self._fill_calendly_form(user_message)
+                return
+            
+            # === CHECK FOR CALENDLY INTERACTION ===
+            if self._on_calendly and self.browser_session:
+                print(f"[Agent] 📅 On Calendly, handling scheduling interaction", flush=True)
+                await self._handle_calendly_interaction(user_message)
+                return
             
             # === CHECK FOR PLAYBOOK TRIGGER ===
             if self.playbook and self.browser_session:
@@ -1124,13 +1146,578 @@ Respond with ONLY "yes" or "no"."""
             print(f"[Agent] 📅 Opening Calendly: {calendly_url}", flush=True)
             await self._speak(scheduling_message)
             await self.browser_session.navigate(calendly_url)
-            print(f"[Agent] ✓ Calendly opened", flush=True)
+            await asyncio.sleep(1.0)  # Wait for Calendly to load
+            self._on_calendly = True
+            print(f"[Agent] ✓ Calendly opened, ready for scheduling", flush=True)
         else:
             await self._speak("I'd love to help you schedule, but I don't have the calendar link handy. You can reach out directly to schedule a call!")
         
         # Save to memory
         if self.llm.memory:
             await self.llm.memory.add_message("assistant", scheduling_message)
+    
+    async def _handle_calendly_interaction(self, user_message: str) -> None:
+        """Handle user interactions on Calendly page (day/time selection)."""
+        from openai import AsyncOpenAI
+        from app.core.config import get_settings
+        settings = get_settings()
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        
+        # Get current page content to find clickable elements
+        page = self.browser_session.page
+        if not page:
+            await self._speak("I'm having trouble with the calendar. Could you try again?")
+            return
+        
+        # Check if user wants to go back/scroll/select using LLM
+        try:
+            prompt = f"""The user is on a Calendly scheduling page. They said: "{user_message}"
+
+What is the user's intent?
+- "select" = They mention a SPECIFIC date (like "January 5th", "the 12th", "Monday") OR a specific time (like "10am", "2:30")
+- "scroll" = They want to scroll to see more times (like "scroll down", "show more", "see other times")
+- "back" = They want to go back to the previous page, exit scheduling, or cancel
+
+IMPORTANT: If they mention ANY specific date or time, answer "select".
+
+Answer ONLY one word: "back", "scroll", or "select"."""
+            
+            response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0
+            )
+            intent = response.choices[0].message.content.strip().lower()
+            print(f"[Agent] 📅 Calendly intent: {intent}", flush=True)
+            
+            if intent == "scroll":
+                print(f"[Agent] 📅 User wants to scroll on Calendly", flush=True)
+                try:
+                    # Debug: Print scrollable elements
+                    scrollable_info = await page.evaluate("""
+                        () => {
+                            const results = [];
+                            const allElements = document.querySelectorAll('*');
+                            for (const el of allElements) {
+                                if (el.scrollHeight > el.clientHeight && el.clientHeight > 50) {
+                                    results.push({
+                                        tag: el.tagName,
+                                        class: el.className.substring(0, 100),
+                                        id: el.id,
+                                        scrollHeight: el.scrollHeight,
+                                        clientHeight: el.clientHeight,
+                                        overflow: getComputedStyle(el).overflow
+                                    });
+                                }
+                            }
+                            return results.slice(0, 10);  // Limit to 10
+                        }
+                    """)
+                    print(f"[Agent] 📜 Scrollable elements found:", flush=True)
+                    for el in scrollable_info:
+                        print(f"  - {el['tag']} class='{el['class'][:50]}' id='{el['id']}' scroll={el['scrollHeight']} client={el['clientHeight']} overflow={el['overflow']}", flush=True)
+                    # Target the Calendly time slots container directly (booking-kit_spotlist-list)
+                    scrolled = await page.evaluate("""
+                        () => {
+                            // Look for the booking-kit spotlist container (Calendly's time slots)
+                            const spotlist = document.querySelector('[class*="spotlist-list"]') ||
+                                            document.querySelector('[class*="booking-kit_spotlist"]');
+                            if (spotlist && spotlist.scrollHeight > spotlist.clientHeight) {
+                                spotlist.scrollBy(0, 200);
+                                return 'spotlist';
+                            }
+                            
+                            // Fallback: find any div with overflow:auto and scrollable
+                            const allDivs = document.querySelectorAll('div');
+                            for (const div of allDivs) {
+                                const style = getComputedStyle(div);
+                                if ((style.overflow === 'auto' || style.overflowY === 'auto') &&
+                                    div.scrollHeight > div.clientHeight && 
+                                    div.clientHeight > 100) {
+                                    div.scrollBy(0, 200);
+                                    return 'overflow-auto';
+                                }
+                            }
+                            
+                            return null;
+                        }
+                    """)
+                    
+                    if scrolled:
+                        print(f"[Agent] ✓ Scrolled using {scrolled}", flush=True)
+                    else:
+                        print(f"[Agent] ⚠️ No scrollable container found", flush=True)
+                    
+                    await asyncio.sleep(0.3)
+                    await self._speak("Here you go! Let me know which time works for you.")
+                    return
+                except Exception as e:
+                    print(f"[Agent] ⚠️ Could not scroll: {e}", flush=True)
+                    await self._speak("I'm having trouble scrolling. You can scroll manually to see more times.")
+                    return
+            
+            if intent == "back":
+                print(f"[Agent] 📅 User wants to go back on Calendly", flush=True)
+                # Try clicking back button or using browser back
+                try:
+                    back_clicked = False
+                    for selector in ['button:has-text("Back")', 'button:has-text("←")', '[aria-label*="back" i]', '[aria-label*="previous" i]']:
+                        try:
+                            await page.click(selector, timeout=1000)
+                            back_clicked = True
+                            print(f"[Agent] ✓ Clicked back button", flush=True)
+                            break
+                        except:
+                            continue
+                    
+                    if not back_clicked:
+                        # Use browser back
+                        await page.go_back()
+                        print(f"[Agent] ✓ Used browser back", flush=True)
+                    
+                    await asyncio.sleep(0.5)
+                    self._awaiting_calendly_info = False
+                    await self._speak("No problem! Here's the calendar again. Which date works better for you?")
+                    return
+                except Exception as e:
+                    print(f"[Agent] ⚠️ Could not go back: {e}", flush=True)
+        except Exception as e:
+            print(f"[Agent] ⚠️ Error checking calendly intent: {e}", flush=True)
+        
+        # Extract clickable elements from Calendly
+        clickable_elements = await page.evaluate("""
+            () => {
+                const elements = [];
+                
+                // Find ALL buttons in the calendar - Calendly uses buttons for dates
+                document.querySelectorAll('button').forEach(el => {
+                    const text = el.textContent.trim();
+                    const ariaLabel = el.getAttribute('aria-label') || '';
+                    const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                    
+                    // Skip if disabled or empty
+                    if (disabled || !text) return;
+                    
+                    // Date buttons - usually just numbers 1-31
+                    if (/^\\d{1,2}$/.test(text)) {
+                        elements.push({type: 'date', text: text, ariaLabel: ariaLabel});
+                    }
+                    // Time slots - contain : or am/pm
+                    else if (text.match(/\\d{1,2}:\\d{2}/) || text.match(/\\d{1,2}\\s*(am|pm|AM|PM)/)) {
+                        elements.push({type: 'time', text: text});
+                    }
+                    // Action buttons
+                    else if (text.toLowerCase().includes('next') || 
+                             text.toLowerCase().includes('confirm') || 
+                             text.toLowerCase().includes('schedule')) {
+                        elements.push({type: 'action', text: text});
+                    }
+                });
+                
+                // Also check for clickable table cells (some calendar implementations)
+                document.querySelectorAll('td[role="button"], td[tabindex="0"], [role="gridcell"] button').forEach(el => {
+                    const text = el.textContent.trim();
+                    if (/^\\d{1,2}$/.test(text) && !el.getAttribute('aria-disabled')) {
+                        elements.push({type: 'date', text: text, ariaLabel: el.getAttribute('aria-label') || ''});
+                    }
+                });
+                
+                return elements;
+            }
+        """)
+        
+        print(f"[Agent] 📅 Calendly elements found: {clickable_elements[:10]}...", flush=True)
+        
+        # Use LLM to determine what to click
+        prompt = f"""The user is on a Calendly scheduling page. They said: "{user_message}"
+
+Available clickable elements on the page:
+{clickable_elements}
+
+What should I click?
+
+RULES:
+- For DATES (like "January 5th", "the 5th") → respond with just the number: "5"
+- For TIMES (like "5am", "10:30am", "2pm") → respond with EXACT time text from the list: "5:00am" or "10:30am"
+- For confirm/next → respond with "Next" or "Confirm"
+
+IMPORTANT: If user says a TIME like "5am", find the matching time in the list (e.g., "5:00am") - do NOT respond with just "5"!
+
+Respond with ONLY the exact text to click. If nothing matches, respond "NONE"."""
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=50,
+                temperature=0
+            )
+            target_text = response.choices[0].message.content.strip()
+            print(f"[Agent] 📅 LLM says click: '{target_text}'", flush=True)
+            
+            if target_text == "NONE" or not target_text:
+                await self._speak("I couldn't find that on the calendar. Could you try saying the day or time again?")
+                return
+            
+            # Try to click the element - use Playwright locator (most reliable)
+            clicked = False
+            try:
+                await page.locator(f'button:has-text("{target_text}")').first.click(timeout=500)
+                clicked = True
+                print(f"[Agent] ✓ Clicked: '{target_text}'", flush=True)
+            except:
+                # Fallback: JS click
+                try:
+                    await page.evaluate("""
+                        (targetText) => {
+                            const buttons = document.querySelectorAll('button');
+                            for (const btn of buttons) {
+                                if (btn.textContent.trim() === targetText || 
+                                    btn.textContent.toLowerCase().includes(targetText.toLowerCase())) {
+                                    btn.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    """, target_text)
+                    clicked = True
+                    print(f"[Agent] ✓ Clicked (JS): '{target_text}'", flush=True)
+                except:
+                    pass
+            
+            if clicked:
+                await asyncio.sleep(0.5)  # Brief wait for UI
+                
+                # Check if we clicked a time (need to click Next)
+                if any(c in target_text.lower() for c in ['am', 'pm', ':']):
+                    await asyncio.sleep(0.8)  # Wait for Next button to appear
+                    
+                    # Click Next button using JS (most reliable for Calendly)
+                    next_clicked = await page.evaluate("""
+                        () => {
+                            const buttons = document.querySelectorAll('button');
+                            for (const btn of buttons) {
+                                const text = btn.textContent.trim().toLowerCase();
+                                if (text === 'next' || text.includes('next')) {
+                                    btn.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+                    """)
+                    
+                    if next_clicked:
+                        print(f"[Agent] ✓ Clicked Next button", flush=True)
+                        await asyncio.sleep(0.5)  # Wait for form
+                        self._awaiting_calendly_info = True
+                        await self._speak("Got it! What's your name and email so I can confirm the booking?")
+                    else:
+                        print(f"[Agent] ⚠️ Next button not found", flush=True)
+                        await self._speak("I selected the time. Could you click Next to continue?")
+                else:
+                    await self._speak("Perfect! Now which time slot works for you?")
+            else:
+                await self._speak("I couldn't click that. Could you try saying it differently?")
+                print(f"[Agent] ⚠️ Failed to click: '{target_text}'", flush=True)
+                
+        except Exception as e:
+            print(f"[Agent] ⚠️ Calendly interaction error: {e}", flush=True)
+            await self._speak("I'm having trouble with the calendar. Could you try again?")
+    
+    async def _fill_calendly_form(self, user_message: str) -> None:
+        """Fill in the Calendly booking form with user's name and email."""
+        from openai import AsyncOpenAI
+        from app.core.config import get_settings
+        settings = get_settings()
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        
+        # First check if user wants to change date/time instead of providing info
+        intent_prompt = f"""The user was asked for their name and email to book a meeting. They said: "{user_message}"
+
+What is their intent?
+- "change_time" = They want to go back and pick a different date or time (mentions a day, date, or wants to change)
+- "provide_info" = They are providing their name and/or email
+
+Answer ONLY: "change_time" or "provide_info"."""
+
+        try:
+            intent_response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": intent_prompt}],
+                max_tokens=20,
+                temperature=0
+            )
+            intent = intent_response.choices[0].message.content.strip().lower()
+            print(f"[Agent] 📅 Form intent: {intent}", flush=True)
+            
+            if intent == "change_time":
+                # User wants to go back to calendar
+                print(f"[Agent] 📅 User wants to change date/time, going back", flush=True)
+                self._awaiting_calendly_info = False
+                page = self.browser_session.page
+                if page:
+                    try:
+                        # Click back or use browser back
+                        back_clicked = False
+                        for selector in ['button:has-text("Back")', '[aria-label*="back" i]']:
+                            try:
+                                await page.click(selector, timeout=1000)
+                                back_clicked = True
+                                break
+                            except:
+                                continue
+                        if not back_clicked:
+                            await page.go_back()
+                        await asyncio.sleep(0.5)
+                    except:
+                        pass
+                
+                # Now handle as a calendar interaction
+                await self._handle_calendly_interaction(user_message)
+                return
+        except Exception as e:
+            print(f"[Agent] ⚠️ Error checking form intent: {e}", flush=True)
+        
+        # Use LLM to extract name and email from user's message
+        prompt = f"""Extract the name and email from this message: "{user_message}"
+
+The user is providing their contact info for a calendar booking.
+
+Respond in this exact format (nothing else):
+NAME: [extracted name or MISSING]
+EMAIL: [extracted email or MISSING]
+
+Examples:
+- "John Smith, john@email.com" → NAME: John Smith, EMAIL: john@email.com
+- "My name is Sarah and email is sarah@test.com" → NAME: Sarah, EMAIL: sarah@test.com
+- "just use mehdi@gmail.com" → NAME: MISSING, EMAIL: mehdi@gmail.com"""
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=100,
+                temperature=0
+            )
+            result = response.choices[0].message.content.strip()
+            print(f"[Agent] 📅 Extracted info: {result}", flush=True)
+            
+            # Parse the result
+            name = None
+            email = None
+            for line in result.split('\n'):
+                if line.startswith('NAME:'):
+                    val = line.replace('NAME:', '').strip()
+                    if val and val != 'MISSING':
+                        name = val
+                elif line.startswith('EMAIL:'):
+                    val = line.replace('EMAIL:', '').strip()
+                    if val and val != 'MISSING':
+                        email = val
+            
+            # Check what we're missing
+            if not name and not email:
+                await self._speak("I didn't catch that. Could you tell me your name and email?")
+                return
+            elif not name:
+                await self._speak(f"Got your email. What's your name?")
+                return
+            elif not email:
+                await self._speak(f"Thanks {name}! What's your email address?")
+                return
+            
+            # We have both - fill the form
+            page = self.browser_session.page
+            if not page:
+                await self._speak("I'm having trouble with the form. Could you try again?")
+                return
+            
+            print(f"[Agent] 📅 Filling form - Name: {name}, Email: {email}", flush=True)
+            
+            # Fill name field
+            try:
+                # Try common Calendly name field selectors
+                name_filled = False
+                for selector in ['input[name="full_name"]', 'input[name="name"]', 'input[placeholder*="name" i]', 'input[aria-label*="name" i]']:
+                    try:
+                        await page.locator(selector).first.fill(name, timeout=1000)
+                        name_filled = True
+                        print(f"[Agent] ✓ Filled name with selector: {selector}", flush=True)
+                        break
+                    except:
+                        continue
+                
+                if not name_filled:
+                    # Fallback: find first visible text input
+                    await page.locator('input[type="text"]').first.fill(name, timeout=2000)
+                    print(f"[Agent] ✓ Filled name (fallback)", flush=True)
+            except Exception as e:
+                print(f"[Agent] ⚠️ Failed to fill name: {e}", flush=True)
+            
+            # Fill email field
+            try:
+                email_filled = False
+                for selector in ['input[name="email"]', 'input[type="email"]', 'input[placeholder*="email" i]', 'input[aria-label*="email" i]']:
+                    try:
+                        await page.locator(selector).first.fill(email, timeout=1000)
+                        email_filled = True
+                        print(f"[Agent] ✓ Filled email with selector: {selector}", flush=True)
+                        break
+                    except:
+                        continue
+                
+                if not email_filled:
+                    print(f"[Agent] ⚠️ Could not find email field", flush=True)
+            except Exception as e:
+                print(f"[Agent] ⚠️ Failed to fill email: {e}", flush=True)
+            
+            await asyncio.sleep(0.3)
+            
+            # Store the info and ask for confirmation before scheduling
+            self._calendly_user_info = {'name': name, 'email': email}
+            self._awaiting_calendly_info = False
+            self._awaiting_calendly_confirmation = True
+            
+            await self._speak(f"I've filled in {name} with email {email}. Does that look correct? Say yes to confirm or let me know what to change.")
+                
+        except Exception as e:
+            print(f"[Agent] ⚠️ Calendly form error: {e}", flush=True)
+            await self._speak("I'm having trouble with the form. Could you try again?")
+    
+    async def _handle_calendly_confirmation(self, user_message: str) -> None:
+        """Handle user's confirmation or correction of Calendly booking info."""
+        from openai import AsyncOpenAI
+        from app.core.config import get_settings
+        settings = get_settings()
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        
+        name = self._calendly_user_info.get('name', '')
+        email = self._calendly_user_info.get('email', '')
+        
+        # Use LLM to determine if this is confirmation or correction
+        prompt = f"""The user was asked to confirm their booking info: Name="{name}", Email="{email}"
+They responded: "{user_message}"
+
+What is their intent?
+- "confirm" = they're happy with the info, proceed with booking
+- "change_name" = they want to change their name (extract new name)
+- "change_email" = they want to change their email (extract new email)  
+- "change_both" = they want to change both (extract new values)
+- "cancel" = they want to cancel/go back
+
+Respond in format:
+INTENT: [confirm/change_name/change_email/change_both/cancel]
+NEW_NAME: [new name if changing, otherwise SAME]
+NEW_EMAIL: [new email if changing, otherwise SAME]"""
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=100,
+                temperature=0
+            )
+            result = response.choices[0].message.content.strip()
+            print(f"[Agent] 📅 Confirmation response: {result}", flush=True)
+            
+            # Parse response
+            intent = "confirm"
+            new_name = name
+            new_email = email
+            
+            for line in result.split('\n'):
+                if line.startswith('INTENT:'):
+                    intent = line.replace('INTENT:', '').strip().lower()
+                elif line.startswith('NEW_NAME:'):
+                    val = line.replace('NEW_NAME:', '').strip()
+                    if val and val != 'SAME':
+                        new_name = val
+                elif line.startswith('NEW_EMAIL:'):
+                    val = line.replace('NEW_EMAIL:', '').strip()
+                    if val and val != 'SAME':
+                        new_email = val
+            
+            if intent == "cancel":
+                self._awaiting_calendly_confirmation = False
+                self._on_calendly = False
+                await self._speak("No problem, we can skip the scheduling for now. Is there anything else I can help you with?")
+                return
+            
+            if intent in ["change_name", "change_email", "change_both"]:
+                # Update stored info
+                self._calendly_user_info = {'name': new_name, 'email': new_email}
+                
+                # Refill the form
+                page = self.browser_session.page
+                if page:
+                    if intent in ["change_name", "change_both"]:
+                        try:
+                            for selector in ['input[name="full_name"]', 'input[name="name"]', 'input[placeholder*="name" i]', 'input[type="text"]']:
+                                try:
+                                    await page.locator(selector).first.fill(new_name, timeout=1000)
+                                    print(f"[Agent] ✓ Updated name to: {new_name}", flush=True)
+                                    break
+                                except:
+                                    continue
+                        except Exception as e:
+                            print(f"[Agent] ⚠️ Failed to update name: {e}", flush=True)
+                    
+                    if intent in ["change_email", "change_both"]:
+                        try:
+                            for selector in ['input[name="email"]', 'input[type="email"]', 'input[placeholder*="email" i]']:
+                                try:
+                                    await page.locator(selector).first.fill(new_email, timeout=1000)
+                                    print(f"[Agent] ✓ Updated email to: {new_email}", flush=True)
+                                    break
+                                except:
+                                    continue
+                        except Exception as e:
+                            print(f"[Agent] ⚠️ Failed to update email: {e}", flush=True)
+                
+                await self._speak(f"Updated! Now showing {new_name} with email {new_email}. Does that look right?")
+                return
+            
+            # Intent is confirm - click the schedule button
+            page = self.browser_session.page
+            if not page:
+                await self._speak("I'm having trouble with the form. Could you click schedule manually?")
+                return
+            
+            try:
+                scheduled = False
+                for btn_text in ['Schedule Event', 'Confirm', 'Book', 'Submit']:
+                    try:
+                        await page.get_by_role("button", name=btn_text).first.click(timeout=1000)
+                        scheduled = True
+                        print(f"[Agent] ✓ Clicked schedule button: {btn_text}", flush=True)
+                        break
+                    except:
+                        continue
+                
+                if not scheduled:
+                    await page.locator('button[type="submit"]').first.click(timeout=2000)
+                    scheduled = True
+                    print(f"[Agent] ✓ Clicked submit button", flush=True)
+                
+                if scheduled:
+                    await asyncio.sleep(1.0)
+                    self._on_calendly = False
+                    self._awaiting_calendly_confirmation = False
+                    self._calendly_user_info = {}
+                    await self._speak(f"You're all set, {name}! The meeting is booked. You'll receive a confirmation email shortly. It was great chatting with you!")
+                else:
+                    await self._speak("Could you click the Schedule Event button to complete the booking?")
+                    
+            except Exception as e:
+                print(f"[Agent] ⚠️ Failed to schedule: {e}", flush=True)
+                await self._speak("Could you click the Schedule Event button to complete the booking?")
+                
+        except Exception as e:
+            print(f"[Agent] ⚠️ Confirmation error: {e}", flush=True)
+            await self._speak("I didn't catch that. Should I go ahead and schedule, or would you like to change something?")
     
     async def _detect_current_screen(self, page_text: str) -> Optional[dict]:
         """
