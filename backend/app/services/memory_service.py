@@ -185,4 +185,43 @@ class MemoryService:
             
         except Exception as e:
             print(f"[Memory] Error clearing history: {e}", flush=True)
+    
+    async def save_user_info(self, name: str, email: str) -> None:
+        """
+        Save user info to the conversation document.
+        
+        Structure:
+        conversations/{room_name}/user_info
+            - name: str
+            - email: str
+            - captured_at: datetime
+        """
+        if not self.db:
+            print(f"[Memory] ⚠️ Firebase not available, cannot save user info", flush=True)
+            return
+        
+        firestore = _get_firestore()
+        if not firestore:
+            return
+        
+        try:
+            # Save to conversations/{room_name} document directly as a field
+            # or as a subcollection - let's use subcollection for consistency
+            user_info_ref = (
+                self.db.collection("conversations")
+                .document(self.room_name)
+                .collection("user_info")
+                .document("contact")
+            )
+            
+            user_info_ref.set({
+                "name": name,
+                "email": email,
+                "captured_at": firestore.SERVER_TIMESTAMP,
+            })
+            
+            print(f"[Memory] ✓ Saved user info: {name} ({email})", flush=True)
+            
+        except Exception as e:
+            print(f"[Memory] ❌ Error saving user info: {e}", flush=True)
 

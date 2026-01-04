@@ -27,7 +27,8 @@ class CalendlyService:
         self,
         browser_session,
         speak_callback: Callable[[str], Awaitable[None]],
-        memory_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
+        memory_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
+        save_user_info_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
     ):
         """
         Initialize CalendlyService.
@@ -36,10 +37,12 @@ class CalendlyService:
             browser_session: Active browser session for page interaction
             speak_callback: Async function to speak text (calls TTS)
             memory_callback: Optional callback to save messages to memory
+            save_user_info_callback: Optional callback to save user contact info (name, email)
         """
         self.browser = browser_session
         self._speak = speak_callback
         self._save_to_memory = memory_callback
+        self._save_user_info = save_user_info_callback
         
         # State management
         self.awaiting_scheduling_confirmation = False
@@ -51,6 +54,14 @@ class CalendlyService:
         # OpenAI client for LLM calls
         settings = get_settings()
         self.client = AsyncOpenAI(api_key=settings.openai_api_key)
+    
+    async def _speak_and_save(self, response: str, user_message: str = None) -> None:
+        """Speak a response and save both user message and response to memory."""
+        await self._speak(response)
+        if self._save_to_memory:
+            if user_message:
+                await self._save_to_memory("user", user_message)
+            await self._save_to_memory("assistant", response)
     
     def reset_state(self) -> None:
         """Reset all Calendly state flags."""
@@ -100,10 +111,14 @@ class CalendlyService:
         Args:
             user_message: What the user said
         """
+        # Save user message to memory
+        if self._save_to_memory:
+            await self._save_to_memory("user", user_message)
+        
         # Get current page
         page = self.browser.page if self.browser else None
         if not page:
-            await self._speak("I'm having trouble with the calendar. Could you try again?")
+            await self._speak_and_save("I'm having trouble with the calendar. Could you try again?")
             return
         
         # Check intent: select, scroll, or back
@@ -132,6 +147,10 @@ class CalendlyService:
         Args:
             user_message: User's message containing their info
         """
+        # Save user message to memory
+        if self._save_to_memory:
+            await self._save_to_memory("user", user_message)
+        
         # First check if user wants to change date/time instead
         try:
             intent = await self._detect_form_intent(user_message)
@@ -153,19 +172,19 @@ class CalendlyService:
         
         # Check what we're missing
         if not name and not email:
-            await self._speak("I didn't catch that. Could you tell me your name and email?")
+            await self._speak_and_save("I didn't catch that. Could you tell me your name and email?")
             return
         elif not name:
-            await self._speak(f"Got your email. What's your name?")
+            await self._speak_and_save(f"Got your email. What's your name?")
             return
         elif not email:
-            await self._speak(f"Thanks {name}! What's your email address?")
+            await self._speak_and_save(f"Thanks {name}! What's your email address?")
             return
         
         # We have both - fill the form
         page = self.browser.page if self.browser else None
         if not page:
-            await self._speak("I'm having trouble with the form. Could you try again?")
+            await self._speak_and_save("I'm having trouble with the form. Could you try again?")
             return
         
         print(f"[Calendly] 📅 Filling form - Name: {name}, Email: {email}", flush=True)
@@ -183,7 +202,7 @@ class CalendlyService:
         self.awaiting_info = False
         self.awaiting_confirmation = True
         
-        await self._speak(f"I've filled in {name} with email {email}. Does that look correct? Say yes to confirm or let me know what to change.")
+        await self._speak_and_save(f"I've filled in {name} with email {email}. Does that look correct? Say yes to confirm or let me know what to change.")
     
     async def handle_confirmation(self, user_message: str) -> None:
         """
@@ -192,6 +211,10 @@ class CalendlyService:
         Args:
             user_message: User's confirmation or correction
         """
+        # Save user message to memory
+        if self._save_to_memory:
+            await self._save_to_memory("user", user_message)
+        
         name = self.user_info.get('name', '')
         email = self.user_info.get('email', '')
         
@@ -203,7 +226,7 @@ class CalendlyService:
         if intent == "cancel":
             self.awaiting_confirmation = False
             self.on_calendly = False
-            await self._speak("No problem, we can skip the scheduling for now. Is there anything else I can help you with?")
+            await self._speak_and_save("No problem, we can skip the scheduling for now. Is there anything else I can help you with?")
             return
         
         if intent in ["change_name", "change_email", "change_both"]:
@@ -216,7 +239,7 @@ class CalendlyService:
                 if intent in ["change_email", "change_both"]:
                     await self._fill_email_field(page, new_email)
             
-            await self._speak(f"Updated! Now showing {new_name} with email {new_email}. Does that look right?")
+            await self._speak_and_save(f"Updated! Now showing {new_name} with email {new_email}. Does that look right?")
             return
         
         # Intent is confirm - click schedule button
@@ -279,10 +302,10 @@ Answer ONLY one word: "back", "scroll", or "select"."""
                 print(f"[Calendly] ⚠️ No scrollable container found", flush=True)
             
             await asyncio.sleep(0.3)
-            await self._speak("Here you go! Let me know which time works for you.")
+            await self._speak_and_save("Here you go! Let me know which time works for you.")
         except Exception as e:
             print(f"[Calendly] ⚠️ Could not scroll: {e}", flush=True)
-            await self._speak("I'm having trouble scrolling. You can scroll manually to see more times.")
+            await self._speak_and_save("I'm having trouble scrolling. You can scroll manually to see more times.")
     
     async def _handle_back(self, page) -> None:
         """Handle back navigation on Calendly."""
@@ -290,7 +313,7 @@ Answer ONLY one word: "back", "scroll", or "select"."""
         try:
             await self._navigate_back(page)
             self.awaiting_info = False
-            await self._speak("No problem! Here's the calendar again. Which date works better for you?")
+            await self._speak_and_save("No problem! Here's the calendar again. Which date works better for you?")
         except Exception as e:
             print(f"[Calendly] ⚠️ Could not go back: {e}", flush=True)
     
@@ -357,7 +380,7 @@ Answer ONLY one word: "back", "scroll", or "select"."""
         print(f"[Calendly] 📅 LLM says click: '{target_text}'", flush=True)
         
         if target_text == "NONE" or not target_text:
-            await self._speak("I couldn't find that on the calendar. Could you try saying the day or time again?")
+            await self._speak_and_save("I couldn't find that on the calendar. Could you try saying the day or time again?")
             return
         
         # Try to click
@@ -370,9 +393,9 @@ Answer ONLY one word: "back", "scroll", or "select"."""
             if any(c in target_text.lower() for c in ['am', 'pm', ':']):
                 await self._click_next_after_time(page)
             else:
-                await self._speak("Perfect! Now which time slot works for you?")
+                await self._speak_and_save("Perfect! Now which time slot works for you?")
         else:
-            await self._speak("I couldn't click that. Could you try saying it differently?")
+            await self._speak_and_save("I couldn't click that. Could you try saying it differently?")
             print(f"[Calendly] ⚠️ Failed to click: '{target_text}'", flush=True)
     
     async def _determine_click_target(self, user_message: str, elements: list) -> str:
@@ -450,10 +473,10 @@ Respond with ONLY the exact text to click. If nothing matches, respond "NONE".""
             print(f"[Calendly] ✓ Clicked Next button", flush=True)
             await asyncio.sleep(0.5)
             self.awaiting_info = True
-            await self._speak("Got it! What's your name and email so I can confirm the booking?")
+            await self._speak_and_save("Got it! What's your name and email so I can confirm the booking?")
         else:
             print(f"[Calendly] ⚠️ Next button not found", flush=True)
-            await self._speak("I selected the time. Could you click Next to continue?")
+            await self._speak_and_save("I selected the time. Could you click Next to continue?")
     
     async def _detect_form_intent(self, user_message: str) -> str:
         """Detect if user wants to change time or provide info."""
@@ -604,7 +627,7 @@ NEW_EMAIL: [new email if changing, otherwise SAME]"""
         """Complete the booking by clicking schedule button."""
         page = self.browser.page if self.browser else None
         if not page:
-            await self._speak("I'm having trouble with the form. Could you click schedule manually?")
+            await self._speak_and_save("I'm having trouble with the form. Could you click schedule manually?")
             return
         
         try:
@@ -639,15 +662,25 @@ NEW_EMAIL: [new email if changing, otherwise SAME]"""
             if scheduled:
                 print(f"[Calendly] ✓ Clicked schedule button (JS): {scheduled}", flush=True)
                 await asyncio.sleep(1.0)
+                
+                # Save user info to Firebase before clearing
+                email = self.user_info.get('email', '')
+                if self._save_user_info and name and email:
+                    try:
+                        await self._save_user_info(name, email)
+                        print(f"[Calendly] ✓ Saved user info to Firebase: {name} ({email})", flush=True)
+                    except Exception as e:
+                        print(f"[Calendly] ⚠️ Failed to save user info: {e}", flush=True)
+                
                 self.on_calendly = False
                 self.awaiting_confirmation = False
                 self.user_info = {}
-                await self._speak(f"You're all set, {name}! The meeting is booked. You'll receive a confirmation email shortly. It was great chatting with you!")
+                await self._speak_and_save(f"You're all set, {name}! The meeting is booked. You'll receive a confirmation email shortly. It was great chatting with you!")
             else:
                 print(f"[Calendly] ⚠️ No schedule button found", flush=True)
-                await self._speak("Could you click the Schedule Event button to complete the booking?")
+                await self._speak_and_save("Could you click the Schedule Event button to complete the booking?")
                 
         except Exception as e:
             print(f"[Calendly] ⚠️ Failed to schedule: {e}", flush=True)
-            await self._speak("Could you click the Schedule Event button to complete the booking?")
+            await self._speak_and_save("Could you click the Schedule Event button to complete the booking?")
 

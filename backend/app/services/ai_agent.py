@@ -304,10 +304,16 @@ class AIAgent:
                     if self.llm.memory:
                         await self.llm.memory.add_message(role, content)
                 
+                # Callback to save user info to Firebase
+                async def save_user_info(name: str, email: str):
+                    if self.llm.memory:
+                        await self.llm.memory.save_user_info(name, email)
+                
                 self.calendly = CalendlyService(
                     browser_session=self.browser_session,
                     speak_callback=self._speak,
-                    memory_callback=save_to_memory
+                    memory_callback=save_to_memory,
+                    save_user_info_callback=save_user_info
                 )
             
             # Another small delay before starting pipeline
@@ -421,8 +427,6 @@ class AIAgent:
                     self._run_deepgram_listener(connection),
                     self._audio_receive_loop(),
                     self._transcript_process_loop(),
-                    self._heartbeat_loop(),  # Keep Daily WebSocket alive
-                    self._browser_heartbeat_loop(),  # Keep Browserbase CDP WebSocket alive
                 )
                 
         except Exception as e:
@@ -492,67 +496,6 @@ class AIAgent:
                 if self.is_running:
                     print(f"[Agent] Transcript processing error: {e}")
     
-    async def _heartbeat_loop(self) -> None:
-        """Send periodic heartbeat to keep WebSocket connection alive."""
-        print("[Agent] 💓 Starting heartbeat loop (every 30s)...")
-        heartbeat_count = 0
-        
-        while self.is_running:
-            try:
-                await asyncio.sleep(30)  # Send heartbeat every 30 seconds
-                
-                if not self.is_running:
-                    break
-                
-                heartbeat_count += 1
-                
-                # Force signaling traffic by fetching participants and updating subscription
-                # This should keep the WebSocket connection alive
-                participants = self.client.participants()
-                participant_count = len(participants) if participants else 0
-                
-                # Also do a small subscription update to force signaling
-                self.client.update_subscription_profiles({
-                    "base": {
-                        "camera": "unsubscribed",  
-                        "microphone": "subscribed",
-                        "screenVideo": "subscribed",
-                        "screenAudio": "subscribed"
-                    }
-                })
-                
-                print(f"[Agent] 💓 Heartbeat #{heartbeat_count} (participants: {participant_count})", flush=True)
-                
-            except Exception as e:
-                if self.is_running:
-                    print(f"[Agent] Heartbeat error (continuing): {e}", flush=True)
-    
-    async def _browser_heartbeat_loop(self) -> None:
-        """Send periodic heartbeat to keep Browserbase CDP WebSocket alive."""
-        print("[Agent] 🌐 Starting browser heartbeat loop (every 30s)...")
-        heartbeat_count = 0
-        
-        while self.is_running:
-            try:
-                await asyncio.sleep(30)  # Send heartbeat every 30 seconds
-                
-                if not self.is_running:
-                    break
-                
-                # Only heartbeat if we have an active browser session
-                if self.browser_session and self.browser_session.page:
-                    heartbeat_count += 1
-                    
-                    # Force CDP traffic by executing a no-op JavaScript
-                    # This keeps the Playwright/CDP WebSocket alive
-                    await self.browser_session.page.evaluate("1+1")
-                    
-                    print(f"[Agent] 🌐 Browser heartbeat #{heartbeat_count}", flush=True)
-                    
-            except Exception as e:
-                if self.is_running:
-                    print(f"[Agent] Browser heartbeat error (continuing): {e}", flush=True)
-    
     # =========================================================================
     # RESPONSE ORCHESTRATION (Main conversation flow)
     # =========================================================================
@@ -573,6 +516,9 @@ class AIAgent:
                     is_yes = await self.intents.check_affirmative_response(user_message)
                     if is_yes:
                         print(f"[Agent] 📅 User confirmed scheduling, opening Calendly", flush=True)
+                        # Save user message before opening Calendly
+                        if self.llm.memory:
+                            await self.llm.memory.add_message("user", user_message)
                         closing_config = getattr(self.presenter.persona, 'closing', {})
                         calendly_url = closing_config.get('calendly_url', '')
                         scheduling_message = closing_config.get('scheduling_message', 
@@ -581,6 +527,10 @@ class AIAgent:
                         return
                     else:
                         print(f"[Agent] 👋 User declined scheduling", flush=True)
+                        # Save user message before declining response
+                        if self.llm.memory:
+                            await self.llm.memory.add_message("user", user_message)
+                            await self.llm.memory.add_message("assistant", "No problem at all! Feel free to reach out anytime. Take care!")
                         self.calendly.awaiting_scheduling_confirmation = False
                         await self._speak("No problem at all! Feel free to reach out anytime. Take care!")
                         return
@@ -613,6 +563,9 @@ class AIAgent:
                 # Use LLM to detect demo intent with full conversation context
                 if await self.intents.check_demo_intent(user_message, conversation_history):
                     print(f"[Agent] 🎬 Playbook triggered: {self.playbook.name}", flush=True)
+                    # Save user message before running playbook
+                    if self.llm.memory:
+                        await self.llm.memory.add_message("user", user_message)
                     await self._run_playbook()
                     return
             
@@ -623,6 +576,9 @@ class AIAgent:
                 is_closing = await self.intents.check_closing_intent(user_message, history_for_closing)
                 if is_closing:
                     print(f"[Agent] 👋 Closing intent detected", flush=True)
+                    # Save user message before handling closing
+                    if self.llm.memory:
+                        await self.llm.memory.add_message("user", user_message)
                     await self._handle_closing(closing_config)
                     return
             
