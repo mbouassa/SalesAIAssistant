@@ -7,6 +7,7 @@ const COMPANIES = [
   { id: '', name: 'Default AI' },
   { id: 'persona_tenex', name: 'Tenex' },
   { id: 'persona_healingpath', name: 'Healing Path' },
+  { id: 'persona_notion', name: 'Notion' },
 ]
 
 export default function HomePage() {

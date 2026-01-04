@@ -1,0 +1,74 @@
+meta:
+  company_id: "persona_notion"
+  name: "Full Notion Demo"
+  description: "A guided tour of Notion’s template marketplace, AI features, calendar integration, and support resources."
+  estimated_duration: "2-3 minutes"
+  start_url: "https://www.notion.com/templates?assetsVersion=23.13.20251230.1157"
+
+triggers:
+  - "give me a demo"
+  - "show me everything"
+  - "full tour"
+  - "walk me through"
+
+steps:
+  - id: intro_overview
+    screen: home
+    action:
+      type: click
+      target: Marketplace
+    narrate_intent: "Welcome! Here’s the Notion Template Marketplace, where you can explore over 30,000 customizable templates built by our vibrant community. Whether you're organizing your personal life, managing projects at work, or planning for school, you'll find templates for every need."
+
+  - id: browse_categories
+    screen: home
+    action:
+      type: click
+      target: Search template gallery
+    narrate_intent: "Let’s take a look at how easy it is to search or filter by popular categories—such as Habit Tracking, Personal Productivity, Work, and Student Life. This helps you quickly find templates that fit your workflow."
+
+  - id: visit_ai
+    screen: ai
+    action:
+      type: click
+      target: AI
+    narrate_intent: "Now, let’s check out Notion’s integrated AI. Notion AI helps you write, summarize notes, automate tasks, search across your workspace, and even create custom agents to handle repetitive workflows—all securely and with advanced permissions."
+
+  - id: calendar_highlight
+    screen: calendar
+    action:
+      type: click
+      target: Calendar
+    narrate_intent: "Next, here’s Notion Calendar. It’s a beautifully designed, fully integrated scheduling tool that syncs with Google Calendar, lets you manage all your commitments in one place, and makes scheduling across time zones a breeze."
+
+  - id: consultants_section
+    screen: consultants
+    action:
+      type: click
+      target: Work
+    narrate_intent: "If you ever want expert help, you can connect with certified Notion Consultants. They can assist with setup, automations, integrations, and training—so you can make the most of your workspace."
+
+  - id: resources_support
+    screen: resources
+    action:
+      type: click
+      target: Help center
+    narrate_intent: "For ongoing support, Notion offers a robust help center, community resources, and integration guides. Whether you have technical questions or want to explore new features, help is always just a click away."
+
+  - id: company_info
+    screen: company_info
+    action:
+      type: click
+      target: About us
+    narrate_intent: "Finally, if you want to know more about Notion as a company—our mission, security practices, or career opportunities—you can visit our About page."
+
+  - id: closing_step
+    screen: home
+    action:
+      type: scroll
+      target: ""
+    narrate_intent: "That’s a quick tour of Notion! Let me know if you’d like to see something specific or need help getting started."
+
+fallback_narration:
+  action_failed: "Hmm, that didn't work. Let me try another way."
+  element_not_found: "I'm having trouble finding that. Let me describe it instead."
+  demo_interrupted: "Got it — I'll pause here. What would you like to know?"

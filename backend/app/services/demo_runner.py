@@ -563,16 +563,29 @@ def load_playbook(company_id: str) -> Optional[Playbook]:
     # Look for playbook file
     playbooks_dir = Path(__file__).parent.parent / "playbooks"
     
-    # Try different naming conventions
+    # First, scan all playbooks and match by company_id in meta (most reliable)
+    try:
+        for yaml_file in playbooks_dir.glob("*.yaml"):
+            if yaml_file.name == "__init__.py":
+                continue
+            playbook = Playbook.from_yaml(yaml_file)
+            if playbook.company_id == company_id:
+                logger.debug(f"Found playbook by company_id match: {yaml_file.name}")
+                _playbooks_cache[company_id] = playbook
+                return playbook
+    except Exception as e:
+        logger.warning(f"Error scanning playbooks: {e}")
+    
+    # Fallback: try different naming conventions
     base_name = company_id.replace('persona_', '')
     possible_names = [
-        f"{company_id}.yaml",           # persona_healingpath.yaml
-        f"{base_name}.yaml",            # healingpath.yaml
-        f"healing_path.yaml",           # healing_path.yaml (special case)
-        f"{base_name.replace('healing', 'healing_')}.yaml",  # healing_path.yaml
+        f"{company_id}.yaml",           # persona_notion.yaml
+        f"{base_name}.yaml",            # notion.yaml
+        f"{base_name}_playbook.yaml",   # notion_playbook.yaml
+        f"{base_name.replace('path', '_path')}.yaml",  # healing_path.yaml
     ]
     
-    logger.debug(f"Looking for playbook: {possible_names}")
+    logger.debug(f"Looking for playbook by name: {possible_names}")
     
     for name in possible_names:
         playbook_path = playbooks_dir / name
@@ -580,18 +593,6 @@ def load_playbook(company_id: str) -> Optional[Playbook]:
             playbook = Playbook.from_yaml(playbook_path)
             _playbooks_cache[company_id] = playbook
             return playbook
-    
-    # Also try listing all playbooks and matching by company_id in meta
-    try:
-        for yaml_file in playbooks_dir.glob("*.yaml"):
-            if yaml_file.name == "__init__.py":
-                continue
-            playbook = Playbook.from_yaml(yaml_file)
-            if playbook.company_id == company_id:
-                _playbooks_cache[company_id] = playbook
-                return playbook
-    except Exception as e:
-        logger.warning(f"Error scanning playbooks: {e}")
     
     logger.warning(f"No playbook found for company: {company_id}")
     return None
