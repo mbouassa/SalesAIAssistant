@@ -452,7 +452,9 @@ class AIAgent:
                 await asyncio.sleep(0.04)  # ~40ms delay (half chunk time)
                 
             except Exception as e:
-                if self.is_running:
+                # Filter out noisy WebSocket 1005 errors (no status received - normal when idle)
+                error_str = str(e)
+                if "1005" not in error_str and self.is_running:
                     print(f"[Agent] Audio receive error: {e}")
                 await asyncio.sleep(0.1)
     

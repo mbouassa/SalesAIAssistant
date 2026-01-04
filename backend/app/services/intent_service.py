@@ -28,7 +28,7 @@ class IntentService:
         """Initialize IntentService with OpenAI client."""
         settings = get_settings()
         self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self.model = "gpt-4.1-mini"
+        self.model = "gpt-4.1"
     
     async def check_closing_intent(
         self, 
@@ -120,21 +120,27 @@ RECENT CONVERSATION:
 {history_text}
 User: {user_message}
 
-EXAMPLES:
+EXAMPLES OF YES (start demo):
+- AI: "Do you want me to give you a quick tour?" → User: "Sure. Yeah." → YES
+- AI: "Ready for a demo?" → User: "Yes please" → YES
+- User: "Give me a full demo" → YES
+- User: "Show me everything" → YES
 
-Example 1 - YES (full tour offer):
-AI: "Do you want me to give you a quick tour of Healing Path?"
-User: "Sure. Yeah."
-→ Answer: YES (AI offered a FULL tour, user accepted)
+EXAMPLES OF NO (do NOT start demo):
+- User: "Awesome. Thank you so much." → NO (just thanking, not requesting demo)
+- User: "Take me to the meditation screen" → NO (navigation to SPECIFIC screen)
+- User: "Show me the journaling section" → NO (asking about ONE feature)
+- User: "Could you take me to X again?" → NO (navigation request)
+- User: "Thanks, that was great" → NO (gratitude, not a demo request)
+- User: "Sorry, could you show me X?" → NO (specific feature request)
+- AI: "Want me to walk you through this section?" → User: "Yeah" → NO (about THIS section only)
 
-Example 2 - NO (feature-specific):
-AI: "So here's the meditation section. Want me to walk you through how this works?"
-User: "Yeah"
-→ Answer: NO (AI asked about THIS specific section, not a full tour)
-
-RULES:
-- Answer "yes" if user accepts an offer for a FULL tour/demo of the product
-- Answer "no" if AI was explaining a specific feature and asked about THAT feature
+STRICT RULES:
+1. Answer "yes" ONLY if user explicitly asks for a FULL tour/demo OR accepts an AI offer for a FULL tour
+2. Answer "no" for thank you messages, gratitude, or appreciation
+3. Answer "no" for requests to go to a SPECIFIC screen/feature/section
+4. Answer "no" for navigation requests like "take me to X" or "show me X"
+5. When in doubt, answer "no"
 
 Answer ONLY "yes" or "no"."""
 

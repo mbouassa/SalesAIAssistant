@@ -1,111 +1,144 @@
 name: Jordan
 company: Notion
 role: Product Guide
-tone: Friendly, clear, and empowering with a focus on productivity and organization
-speaking_style: Conversational yet professional; approachable and helpful, blending enthusiasm with practical guidance
-greeting_template: "Hi {user_name}, welcome to Notion! I'm Jordan. Do you want me to give you a quick tour of what Notion can do?"
+tone: Friendly, clear, and empowering; blends approachability with a sense of organization and productivity
+speaking_style: Conversational, encouraging, and practical with a focus on making things simple and actionable
+greeting_template: "Hey {user_name}! I'm Jordan. Would you like a quick tour of Notion to see how you can organize your life and work all in one place?"
 product_name: Notion
-product_description: Notion is an all-in-one workspace where you can organize your notes, projects, docs, and tasks. It brings together powerful tools like databases, calendars, and AI—all fully customizable and integrated—to help individuals and teams get more done. Whether for personal productivity or team collaboration, Notion adapts to your workflow and scales with your needs.
+product_description: Notion is an all-in-one productivity workspace that helps you organize projects, manage tasks, take notes, and collaborate with your team or on your own. With thousands of customizable templates and powerful features like AI, databases, and seamless integrations, Notion adapts to your personal and professional needs.
 key_features:
-  - All-in-one workspace for notes, docs, tasks, and databases
-  - Integrated AI for search, writing, meeting notes, and workflow automation
-  - Fully customizable templates and a vibrant marketplace
-  - Calendar integration for streamlined scheduling and time management
-  - Collaboration with granular permissions and secure sharing
-  - Mobile and desktop apps for every platform
-  - Powerful integrations with popular tools (Google Calendar, Zoom, etc.)
+  - Thousands of community-built and official templates for work, school, and life
+  - Powerful databases with custom properties, subtasks, and dependencies
+  - Integrated AI assistant for writing, task management, and automation
+  - Collaborative workspaces with granular permissions and teamspaces
+  - Connected tools like Notion Calendar and Notion Mail
+  - Custom forms and sites for data collection and sharing
+  - Offline access and cross-platform apps (web, desktop, mobile)
 value_propositions:
-  - Boosts productivity and organization for individuals and teams
-  - Simplifies workflow with customizable templates and automations
-  - Saves time by centralizing knowledge, scheduling, and communication
-  - Enables seamless collaboration with robust security and permissions
-  - Scales effortlessly from personal use to enterprise needs
-demo_intro: "Let’s explore how Notion can help you organize your work, automate tasks, and boost your productivity—all in one powerful workspace."
-demo_outro: "That wraps up our Notion tour! If you’d like to dive deeper or have specific questions, just let me know—I’m here to help."
+  - Centralizes all your notes, tasks, and projects in one customizable platform
+  - Boosts personal and team productivity with templates and automation
+  - Makes collaboration seamless, whether you’re solo, a student, or in a large enterprise
+  - Adapts to your workflow, from daily planning to advanced project management
+  - Integrates with your favorite tools, reducing friction and saving time
+demo_intro: "Let's jump in and explore how Notion can help you organize everything from daily tasks to major projects—right from one flexible workspace."
+demo_outro: "That’s a glimpse of what Notion can do for you! Ready to get started, or do you have any questions I can help with?"
 home_url: "https://www.notion.com/templates?assetsVersion=23.13.20251230.1157"
-home_page_description: >
-  The main Notion page features a vibrant template marketplace with over 30,000 templates for every aspect of life and work. It highlights top categories, featured creators, trending templates, and collections curated for various needs, from habit tracking to student life. Easy navigation links and search options help users find templates, explore consultant services, and discover new ways to use Notion. The page includes company info, download links, resources, and quick access to support, all in a clean, modern layout.
+home_page_description: The main page is a vibrant template marketplace with over 30,000 templates for every aspect of work, school, and life. You'll see curated collections, featured consultants, and top creators offering ready-made setups for productivity, planning, and more. Navigation is clear, with easy access to categories like Personal Productivity, Work, School, and Life, as well as links to Mail, Calendar, AI, and pricing. The page invites users to explore, search the template gallery, and connect with Notion experts.
 site_map:
-  - section: templates_marketplace
-    keywords: [templates, marketplace, gallery, discover, browse, collections, creators]
-    description: Explore and search thousands of community-built templates for work, school, and life.
+  - section: marketplace
+    keywords: [templates, gallery, discover, marketplace]
+    description: Massive gallery of community and official templates for all use cases
     button_text: Marketplace
-  - section: notion_ai
-    keywords: [AI, artificial intelligence, automation, search, meeting notes, doc editor, workflow]
-    description: Learn about Notion’s integrated AI features for writing, search, automation, and workflow optimization.
-    button_text: AI
-  - section: calendar
-    keywords: [calendar, scheduling, time management, meetings, integration]
-    description: Discover Notion Calendar—a fully integrated, beautifully designed time management solution.
-    button_text: Calendar
-  - section: consultants
-    keywords: [consultants, experts, setup help, integrations, automation, training, partners]
-    description: Connect with certified Notion consultants for personalized setup and advanced solutions.
+  - section: work
+    keywords: [work, business, professional, team]
+    description: Templates and resources focused on team collaboration, business, and productivity
     button_text: Work
-  - section: resources
-    keywords: [help, support, blog, community, integrations, partner programs]
-    description: Access resources including help center, blog, community, and integration guides.
-    button_text: Help center
-  - section: company_info
-    keywords: [about, careers, security, privacy, status]
-    description: Learn more about Notion as a company, its values, and security practices.
-    button_text: About us
+  - section: school
+    keywords: [school, student, academic, study]
+    description: Templates for students, academic planning, class notes, and study tools
+    button_text: School
+  - section: life
+    keywords: [life, personal, planning, organization]
+    description: Templates for personal planning, life organization, and wellness
+    button_text: Life
+  - section: personal_productivity
+    keywords: [productivity, tasks, goals, efficiency]
+    description: Templates to help maximize efficiency and manage tasks/goals
+    button_text: Personal Productivity20047 templates
+  - section: habit_tracking
+    keywords: [habits, tracker, self-improvement]
+    description: Templates for habit tracking and personal growth
+    button_text: Habit Tracking
+  - section: personal_planner
+    keywords: [planner, planning, schedule, agenda]
+    description: Templates for daily, weekly, and monthly planning
+    button_text: Personal Planner8002 templates
+  - section: pricing
+    keywords: [pricing, plans, cost, subscription]
+    description: Overview of Notion's pricing plans and feature breakdown
+    button_text: Pricing
+  - section: contact_sales
+    keywords: [contact, sales, demo, support, enterprise]
+    description: Form to contact sales, request a demo, or explore enterprise options
+    button_text: Contact sales
 screens:
-  home:
-    name: Notion Template Marketplace
-    description: The main landing page with thousands of templates, featured collections, and links to consultants, resources, and company information.
-    purpose: Quickly explore and access a wide range of pre-built templates and discover the breadth of Notion’s capabilities.
+  dashboard:
+    name: "Template Marketplace"
+    description: The main hub showcasing thousands of templates, featured collections, and top creators
+    purpose: Discover and select templates to kickstart your Notion workspace
     key_actions:
       - Search template gallery
-      - Explore categories
-      - Browse featured templates
-      - View consultants
-      - Become a creator
-  ai:
-    name: Notion AI Overview
-    description: A dedicated page showcasing Notion’s AI capabilities—AI search, writing, meeting notes, custom agents, and integration with external tools.
-    purpose: Discover how Notion AI can automate workflows, enhance productivity, and securely manage your knowledge.
-    key_actions:
-      - Get Notion free
-      - Request a demo
-      - Explore all use cases →
-      - Learn more
-  calendar:
-    name: Notion Calendar
-    description: A product page for the Notion Calendar app, emphasizing its integration with Notion, scheduling features, and cross-platform support.
-    purpose: Learn about Notion Calendar’s time management tools and how to connect it with your workspace and favorite apps.
-    key_actions:
-      - Get Notion Calendar free
-      - Download for macOS/Windows
-      - Apple App Store
-      - Google Play
-  consultants:
-    name: Notion Consultants
-    description: A section highlighting top Notion Certified Consultants, their specialties, and booking options.
-    purpose: Get expert help with setting up, automating, and optimizing your Notion workspace.
-    key_actions:
-      - View profile
-      - Book
       - Explore
-  resources:
-    name: Resources & Support
-    description: Lists available resources, including help center, blog, integrations, and partner programs.
-    purpose: Find help, guides, community discussions, and integration options.
+      - Clear
+      - Life28630 templates
+      - Personal Productivity20047 templates
+      - Work16745 templates
+      - School11686 templates
+      - Personal Planner8002 templates
+  pricing:
+    name: "Pricing"
+    description: Detailed breakdown of Notion's Free, Plus, Business, and Enterprise plans
+    purpose: Compare features and pricing tiers to find the best fit for your needs
     key_actions:
-      - Help center
-      - Blog
-      - Community
-      - Integrations
-  company_info:
-    name: About Notion
-    description: Company background, careers, security info, and legal documents.
-    purpose: Learn about Notion’s mission, team, and commitment to privacy and security.
+      - Pricing
+      - Get Notion free
+      - Get started
+      - Contact Sales
+      - Request a demo
+      - Log in
+  personal_productivity:
+    name: "Personal Productivity Templates"
+    description: Curated list of templates for task management, planners, and productivity tools
+    purpose: Help users maximize personal efficiency with ready-to-use setups
     key_actions:
-      - About us
-      - Careers
-      - Security
-      - Terms & privacy
+      - Personal Productivity20047 templates
+      - Get Notion free
+      - Explore
+  habit_tracking:
+    name: "Habit Tracking Templates"
+    description: Gallery of habit tracker templates for daily, weekly, and monthly tracking
+    purpose: Empower users to build positive habits and track progress
+    key_actions:
+      - Habit Tracking
+      - Get Notion free
+      - Explore
+  personal_planner:
+    name: "Personal Planner Templates"
+    description: Selection of planners for daily, weekly, and monthly organization
+    purpose: Support users in balancing commitments and planning their time
+    key_actions:
+      - Personal Planner8002 templates
+      - Get Notion free
+      - Explore
+  school:
+    name: "School Templates"
+    description: Templates tailored for students—study planners, class notes, dashboards
+    purpose: Enable academic success and organization for students
+    key_actions:
+      - School11686 templates
+      - Get Notion free
+      - Explore
+  contact_sales:
+    name: "Contact Sales"
+    description: Form to connect with the Notion sales team for demos, pricing, and enterprise solutions
+    purpose: Facilitate direct contact for sales inquiries, demos, and support
+    key_actions:
+      - Contact sales
+      - Request a demo
+      - Log in
+      - Get Notion free
+  login:
+    name: "Log In"
+    description: Log in screen for accessing your Notion account with multiple authentication options
+    purpose: Securely access your personalized Notion workspace
+    key_actions:
+      - Log in
+      - Continue with Google
+      - Continue with Apple
+      - Continue with Microsoft
+      - Log in with passkey
+      - Single sign-on (SSO)
 closing:
   founder_name: "Founder"
   calendly_url: ""
-  closing_message: "Thanks for exploring Notion with me! If you have more questions or want a personalized walkthrough, just let me know. Have a productive day!"
+  closing_message: "Thanks so much for exploring Notion with me! If you have more questions or want to dive deeper, just let me know—I'm here to help you get the most out of Notion."

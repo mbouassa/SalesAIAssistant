@@ -258,7 +258,8 @@ class BrowserService:
         session = self.client.sessions.create(
             project_id=self.project_id, 
             timeout=1800,
-            keep_alive=True
+            keep_alive=True,
+            region="eu-central-1"
         )
         
         # Get debug URLs for live view
