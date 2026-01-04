@@ -597,6 +597,4 @@ Each company can have its own persona configuration with custom:
 ### Conversation Memory
 Firebase Firestore stores conversation history per room, allowing the AI to maintain context across the call and reference previous messages.
 
-## 📝 License
 
-MIT
