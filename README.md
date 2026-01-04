@@ -357,6 +357,110 @@ for step in plan_steps:
 
 This allows natural conversation flow—users don't have to wait for the AI to finish before speaking.
 
+### Conversation Memory (Firebase)
+
+Every message in the conversation is persisted to **Firebase Firestore** in real-time:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         FIRESTORE STRUCTURE                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  conversations/                                                             │
+│  └── {room_name}/                                                           │
+│      ├── messages/                          # Subcollection                 │
+│      │   ├── {auto_id_1}                                                    │
+│      │   │   ├── role: "user"                                               │
+│      │   │   ├── content: "Show me the meditation section"                  │
+│      │   │   └── timestamp: 2024-01-15T10:30:00Z                            │
+│      │   ├── {auto_id_2}                                                    │
+│      │   │   ├── role: "assistant"                                          │
+│      │   │   ├── content: "Sure, let me take you there!"                    │
+│      │   │   └── timestamp: 2024-01-15T10:30:05Z                            │
+│      │   └── ...                                                            │
+│      │                                                                      │
+│      └── user_info/                         # Subcollection (from Calendly) │
+│          └── contact                                                        │
+│              ├── name: "John Smith"                                         │
+│              ├── email: "john@example.com"                                  │
+│              └── captured_at: 2024-01-15T10:45:00Z                          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key features:**
+- Messages saved immediately after user speaks and AI responds
+- Last 20 messages loaded into context for LLM
+- User contact info captured during Calendly booking is saved separately
+- Room-based isolation (each call has its own conversation history)
+
+### Calendly Scheduling Flow
+
+When the user indicates they're done exploring, the AI offers to schedule a call with the founder. The Calendly service manages the entire booking flow:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         CALENDLY STATE MACHINE                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌──────────────────────┐                                                   │
+│  │  CLOSING DETECTED    │  User: "That's all I need, thanks"                │
+│  └──────────┬───────────┘                                                   │
+│             ▼                                                               │
+│  ┌──────────────────────┐                                                   │
+│  │  OFFER SCHEDULING    │  AI: "Would you like to schedule a call with     │
+│  │                      │       our founder Sarah?"                         │
+│  │  awaiting_scheduling │                                                   │
+│  │  _confirmation=true  │                                                   │
+│  └──────────┬───────────┘                                                   │
+│             ▼                                                               │
+│  ┌──────────────────────┐                                                   │
+│  │  OPEN CALENDLY       │  AI navigates browser to Calendly link           │
+│  │  on_calendly=true    │  AI: "I'm opening the calendar now..."            │
+│  └──────────┬───────────┘                                                   │
+│             ▼                                                               │
+│  ┌──────────────────────┐                                                   │
+│  │  DATE/TIME SELECTION │  User: "January 15th at 2pm"                      │
+│  │                      │  AI uses LLM to detect intent:                    │
+│  │                      │  - "select" → click date/time                     │
+│  │                      │  - "scroll" → show more times                     │
+│  │                      │  - "back" → go back                               │
+│  └──────────┬───────────┘                                                   │
+│             ▼                                                               │
+│  ┌──────────────────────┐                                                   │
+│  │  FORM FILLING        │  AI: "I'll need your name and email"              │
+│  │  awaiting_info=true  │  User: "John Smith, john@example.com"             │
+│  │                      │  AI extracts name/email via LLM                   │
+│  │                      │  AI fills form fields programmatically            │
+│  └──────────┬───────────┘                                                   │
+│             ▼                                                               │
+│  ┌──────────────────────┐                                                   │
+│  │  CONFIRMATION        │  AI: "I have John Smith with john@example.com.   │
+│  │  awaiting_confirm    │       Does that look correct?"                    │
+│  │  =true               │  User: "Yes" / "Change email to..."               │
+│  └──────────┬───────────┘                                                   │
+│             ▼                                                               │
+│  ┌──────────────────────┐                                                   │
+│  │  BOOKING COMPLETE    │  AI clicks "Schedule Event" button               │
+│  │                      │  AI saves {name, email} to Firebase               │
+│  │                      │  AI: "You're all set! You'll receive a            │
+│  │                      │       confirmation email shortly."                │
+│  └──────────────────────┘                                                   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**LLM-powered interactions:**
+- **Intent detection**: Classifies user message as date selection, scroll request, or back navigation
+- **Contact extraction**: Parses natural language to extract name and email ("I'm John, email is john@gmail.com")
+- **Confirmation parsing**: Understands corrections ("Actually change the email to...")
+
+**State management:**
+- `awaiting_scheduling_confirmation`: Waiting for user to accept/decline scheduling offer
+- `on_calendly`: User is on Calendly page, selecting date/time
+- `awaiting_info`: Waiting for user to provide name/email
+- `awaiting_confirmation`: Waiting for user to confirm booking details
+
 ## 🛠️ Tech Stack
 
 ### Frontend
