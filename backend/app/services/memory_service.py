@@ -6,6 +6,7 @@ NOTE: Firebase imports are lazy to avoid gRPC threading conflicts with Daily SDK
 """
 
 import os
+import json
 from datetime import datetime
 from typing import Optional, Any, TYPE_CHECKING
 
@@ -36,23 +37,38 @@ def _ensure_firebase_init() -> Optional["Client"]:
         _firebase_initialized = True
         return None
     
-    # Look for credentials file
-    cred_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        "firebase-credentials.json"
-    )
+    cred = None
     
-    if not os.path.exists(cred_path):
-        print(f"[Memory] ⚠️ Firebase credentials not found at {cred_path}")
-        _firebase_initialized = True  # Mark as "tried" to avoid repeated attempts
-        return None
+    # Option 1: Check for FIREBASE_CREDENTIALS env var (for deployment)
+    firebase_creds_json = os.environ.get("FIREBASE_CREDENTIALS")
+    if firebase_creds_json:
+        try:
+            creds_dict = json.loads(firebase_creds_json)
+            cred = credentials.Certificate(creds_dict)
+            print("[Memory] Using Firebase credentials from environment variable", flush=True)
+        except json.JSONDecodeError as e:
+            print(f"[Memory] ⚠️ Invalid FIREBASE_CREDENTIALS JSON: {e}")
+    
+    # Option 2: Fall back to credentials file (for local development)
+    if cred is None:
+        cred_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "firebase-credentials.json"
+        )
+        
+        if os.path.exists(cred_path):
+            cred = credentials.Certificate(cred_path)
+            print("[Memory] Using Firebase credentials from file", flush=True)
+        else:
+            print(f"[Memory] ⚠️ No Firebase credentials found (no env var or file)")
+            _firebase_initialized = True
+            return None
     
     try:
         # Check if already initialized
         try:
             firebase_admin.get_app()
         except ValueError:
-            cred = credentials.Certificate(cred_path)
             firebase_admin.initialize_app(cred)
         
         _db = firestore.client()
