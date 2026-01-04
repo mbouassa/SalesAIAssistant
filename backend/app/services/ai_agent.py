@@ -513,20 +513,26 @@ class AIAgent:
             
             # === CHECK FOR PLAYBOOK TRIGGER ===
             if self.playbook and self.browser_session:
-                # Quick keyword check first (fast)
-                if matches_trigger(user_message, self.playbook):
-                    # Confirm with LLM (more accurate)
-                    from openai import AsyncOpenAI
-                    from app.core.config import get_settings
-                    settings = get_settings()
-                    client = AsyncOpenAI(api_key=settings.openai_api_key)
-                    
-                    if await is_demo_request(user_message, client):
-                        print(f"[Agent] 🎬 Playbook triggered: {self.playbook.name}", flush=True)
-                        await self._run_playbook()
-                        return
-                    else:
-                        print(f"[Agent] Demo keyword detected but LLM said not a demo request", flush=True)
+                # Get conversation context for better demo detection
+                from openai import AsyncOpenAI
+                from app.core.config import get_settings
+                settings = get_settings()
+                client = AsyncOpenAI(api_key=settings.openai_api_key)
+                
+                # Get last AI message for context
+                last_ai_message = ""
+                if self.llm.memory:
+                    history = self.llm.memory.get_messages_for_llm()
+                    for msg in reversed(history):
+                        if msg.get('role') == 'assistant':
+                            last_ai_message = msg.get('content', '')[:200]
+                            break
+                
+                # Use LLM to detect demo intent with context
+                if await self._check_demo_intent(user_message, last_ai_message, client):
+                    print(f"[Agent] 🎬 Playbook triggered: {self.playbook.name}", flush=True)
+                    await self._run_playbook()
+                    return
             
             # === CHECK FOR CLOSING INTENT ===
             closing_config = getattr(self.presenter.persona, 'closing', {})
@@ -1081,6 +1087,34 @@ Is the user signaling they want to END the conversation? Answer ONLY "yes" or "n
             
         except Exception as e:
             print(f"[Agent] Closing intent check error: {e}", flush=True)
+            return False
+    
+    async def _check_demo_intent(self, user_message: str, last_ai_message: str, client) -> bool:
+        """Check if user wants a demo/tour using LLM with conversation context."""
+        prompt = f"""Determine if the user wants a product demo or tour.
+
+LAST AI MESSAGE: "{last_ai_message}"
+USER'S RESPONSE: "{user_message}"
+
+The user wants a demo if:
+- They explicitly ask for a demo, tour, or walkthrough
+- They say "yes", "sure", "I'd love to" etc. in response to an offer for a demo/tour
+- They ask to see features or how things work
+
+Answer ONLY "yes" or "no"."""
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0
+            )
+            answer = response.choices[0].message.content.strip().lower()
+            print(f"[Agent] 🎬 Demo intent check: '{user_message[:30]}...' (after: '{last_ai_message[:30]}...') → {answer}", flush=True)
+            return answer == "yes"
+        except Exception as e:
+            print(f"[Agent] ⚠️ Error checking demo intent: {e}", flush=True)
             return False
     
     async def _handle_closing(self, closing_config: dict) -> None:
