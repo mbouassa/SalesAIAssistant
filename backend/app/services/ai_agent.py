@@ -122,6 +122,7 @@ class AIAgent:
         self._demo_interrupted: bool = False  # True when user interrupts during a demo
         self._plan_interrupted: bool = False  # True when user interrupts during plan execution
         self._responding: bool = False  # True while in _respond() method
+        self._awaiting_scheduling_confirmation: bool = False  # True when waiting for user to confirm scheduling
         
         # Browser session (if product demo)
         self.browser_session: Optional[BrowserSession] = None
@@ -473,6 +474,20 @@ class AIAgent:
         
         try:
             print(f"[Agent] 💬 Responding to: '{user_message}'")
+            
+            # === CHECK FOR SCHEDULING CONFIRMATION ===
+            if self._awaiting_scheduling_confirmation:
+                is_yes = await self._check_affirmative_response(user_message)
+                if is_yes:
+                    print(f"[Agent] 📅 User confirmed scheduling, opening Calendly", flush=True)
+                    await self._open_calendly()
+                    return
+                else:
+                    # User declined, just acknowledge
+                    print(f"[Agent] 👋 User declined scheduling", flush=True)
+                    self._awaiting_scheduling_confirmation = False
+                    await self._speak("No problem at all! Feel free to reach out anytime. Take care!")
+                    return
             
             # === CHECK FOR PLAYBOOK TRIGGER ===
             if self.playbook and self.browser_session:
@@ -1060,9 +1075,62 @@ Is the user signaling they want to END the conversation? Answer ONLY "yes" or "n
         print(f"[Agent] 👋 Speaking closing message", flush=True)
         await self._speak(closing_message)
         
+        # Set flag to wait for scheduling confirmation
+        self._awaiting_scheduling_confirmation = True
+        
         # Save to memory
         if self.llm.memory:
             await self.llm.memory.add_message("assistant", closing_message)
+    
+    async def _check_affirmative_response(self, user_message: str) -> bool:
+        """Check if user's response is affirmative using LLM."""
+        from openai import AsyncOpenAI
+        from app.core.config import get_settings
+        settings = get_settings()
+        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        
+        prompt = f"""The AI just asked the user if they'd like to schedule a call with the founder.
+
+User's response: "{user_message}"
+
+Is this an affirmative response (yes, they want to schedule)?
+
+Respond with ONLY "yes" or "no"."""
+
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0
+            )
+            answer = response.choices[0].message.content.strip().lower()
+            print(f"[Agent] 🤔 Affirmative check: '{user_message}' -> {answer}", flush=True)
+            return answer == "yes"
+        except Exception as e:
+            print(f"[Agent] ⚠️ Error checking affirmative: {e}", flush=True)
+            return False
+    
+    async def _open_calendly(self) -> None:
+        """Open Calendly link in browser and speak scheduling message."""
+        self._awaiting_scheduling_confirmation = False
+        
+        closing_config = getattr(self.presenter.persona, 'closing', {})
+        calendly_url = closing_config.get('calendly_url', '')
+        scheduling_message = closing_config.get('scheduling_message', 
+            "I'm opening up the calendar now. Take a look and let me know what time works best for you!")
+        
+        if calendly_url and self.browser_session:
+            print(f"[Agent] 📅 Opening Calendly: {calendly_url}", flush=True)
+            await self._speak(scheduling_message)
+            await self.browser_session.navigate(calendly_url)
+            print(f"[Agent] ✓ Calendly opened", flush=True)
+        else:
+            await self._speak("I'd love to help you schedule, but I don't have the calendar link handy. You can reach out directly to schedule a call!")
+        
+        # Save to memory
+        if self.llm.memory:
+            await self.llm.memory.add_message("assistant", scheduling_message)
     
     async def _detect_current_screen(self, page_text: str) -> Optional[dict]:
         """

@@ -52,8 +52,9 @@ demo_outro: "That's the core of the Journey: simple practices, real support, and
 # Closing flow - when user signals they're done
 closing:
   founder_name: "Sarah"
-  calendly_url: "https://calendly.com/healingpath/intro"
+  calendly_url: "https://calendly.com/mb5165-columbia/30min"
   closing_message: "It was such a pleasure walking through this with you! If you'd like to chat more or have any questions, I can set up a quick call with {founder_name}, the founder of Healing Path. Would you like me to schedule that for you?"
+  scheduling_message: "I'm opening up the calendar now. Take a look and let me know what time works best for you!"
 
 # Home/Dashboard URL - the ONLY URL needed for navigation
 # All other navigation happens through clicking from here
