@@ -53,6 +53,12 @@ def create_app() -> FastAPI:
     app.include_router(rooms.router, prefix="/api/v1")
     app.include_router(agent.router, prefix="/api/v1")
     
+    # Root endpoint (for Railway healthcheck)
+    @app.get("/", tags=["health"])
+    async def root():
+        """Root endpoint for healthcheck."""
+        return {"status": "ok"}
+    
     # Health check endpoint
     @app.get("/health", tags=["health"])
     async def health_check():
