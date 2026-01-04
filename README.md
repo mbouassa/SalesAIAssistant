@@ -765,6 +765,20 @@ Firebase Firestore stores conversation history per room, allowing the AI to main
 
 ---
 
+## 🗓️ If I Had One More Week
+
+Here's what I would prioritize next, in order:
+
+1. **Watch real demo recordings from Karumi** — Understand actual user flows, common questions, objections, and where prospects get confused. This grounds all other improvements in real data.
+
+2. **Build an evaluation pipeline** — Implement LLM-as-judge on Firestore conversations to systematically rate response quality, flag failures, and track improvement over time.
+
+3. **Latency optimizations** — Parallelize intent detection into a single multi-class LLM call, consolidate prompts, and add streaming TTS to reduce time-to-first-response.
+
+4. **Personalized demos** — Add a discovery phase at the start ("What's your main challenge?") to dynamically tailor the demo flow based on user's pain points instead of running a preset script.
+
+5. **Visible cursor** — Add a custom cursor overlay so users watching the Live View can follow along with where the AI is clicking.
+
 ## 📝 License
 
 MIT
