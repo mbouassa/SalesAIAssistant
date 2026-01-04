@@ -2,7 +2,10 @@
  * API service for communicating with the backend.
  */
 
-const API_BASE_URL = '/api/v1'
+// Use environment variable for production, fallback to relative URL for local dev
+const API_BASE_URL = import.meta.env.VITE_API_URL 
+  ? `${import.meta.env.VITE_API_URL}/api/v1`
+  : '/api/v1'
 
 /**
  * Room creation request parameters.
