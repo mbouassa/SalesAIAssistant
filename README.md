@@ -1,5 +1,8 @@
 # Karumi - AI Sales Demo Agent
 
+## Demos
+https://www.loom.com/share/5e391d35f95744dcafb5feab357eeccf
+
 An AI-powered sales agent that conducts live product demonstrations via video calls. The AI joins your call, controls a browser to demo your product, and has natural voice conversations with prospects.
 
 ## 🎯 What It Does
