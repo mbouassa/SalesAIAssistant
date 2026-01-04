@@ -31,8 +31,12 @@ class Settings(BaseSettings):
     browserbase_api_key: str = ""
     browserbase_project_id: str = ""
     
-    # CORS
-    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"]
+    # CORS - localhost for dev (Vercel handled via regex in main.py)
+    cors_origins: list[str] = [
+        "http://localhost:5173", 
+        "http://localhost:5174", 
+        "http://localhost:3000",
+    ]
     
     class Config:
         env_file = ".env"
