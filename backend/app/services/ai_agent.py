@@ -519,17 +519,13 @@ class AIAgent:
                 settings = get_settings()
                 client = AsyncOpenAI(api_key=settings.openai_api_key)
                 
-                # Get last AI message for context
-                last_ai_message = ""
+                # Get conversation history for context
+                conversation_history = []
                 if self.llm.memory:
-                    history = self.llm.memory.get_messages_for_llm()
-                    for msg in reversed(history):
-                        if msg.get('role') == 'assistant':
-                            last_ai_message = msg.get('content', '')[:200]
-                            break
+                    conversation_history = self.llm.memory.get_messages_for_llm()
                 
-                # Use LLM to detect demo intent with context
-                if await self._check_demo_intent(user_message, last_ai_message, client):
+                # Use LLM to detect demo intent with full conversation context
+                if await self._check_demo_intent(user_message, conversation_history, client):
                     print(f"[Agent] 🎬 Playbook triggered: {self.playbook.name}", flush=True)
                     await self._run_playbook()
                     return
@@ -1089,17 +1085,36 @@ Is the user signaling they want to END the conversation? Answer ONLY "yes" or "n
             print(f"[Agent] Closing intent check error: {e}", flush=True)
             return False
     
-    async def _check_demo_intent(self, user_message: str, last_ai_message: str, client) -> bool:
-        """Check if user wants a demo/tour using LLM with conversation context."""
-        prompt = f"""Determine if the user wants a product demo or tour.
+    async def _check_demo_intent(self, user_message: str, conversation_history: list, client) -> bool:
+        """Check if user wants a FULL product demo/tour using LLM with conversation context."""
+        # Format recent conversation for context
+        history_text = ""
+        for msg in conversation_history[-6:]:  # Last 3 exchanges
+            role = "AI" if msg.get("role") == "assistant" else "User"
+            content = msg.get("content", "")[:100]
+            history_text += f"{role}: {content}\n"
+        
+        prompt = f"""Determine if the user wants a FULL product demo or tour (showing ALL features).
 
-LAST AI MESSAGE: "{last_ai_message}"
-USER'S RESPONSE: "{user_message}"
+RECENT CONVERSATION:
+{history_text}
+User: {user_message}
 
-The user wants a demo if:
-- They explicitly ask for a demo, tour, or walkthrough
-- They say "yes", "sure", "I'd love to" etc. in response to an offer for a demo/tour
-- They ask to see features or how things work
+EXAMPLES:
+
+Example 1 - YES (full tour offer):
+AI: "Do you want me to give you a quick tour of Healing Path?"
+User: "Sure. Yeah."
+→ Answer: YES (AI offered a FULL tour, user accepted)
+
+Example 2 - NO (feature-specific):
+AI: "So here's the meditation section. Want me to walk you through how this works?"
+User: "Yeah"
+→ Answer: NO (AI asked about THIS specific section, not a full tour)
+
+RULES:
+- Answer "yes" if user accepts an offer for a FULL tour/demo of the product
+- Answer "no" if AI was explaining a specific feature and asked about THAT feature
 
 Answer ONLY "yes" or "no"."""
 
@@ -1111,7 +1126,8 @@ Answer ONLY "yes" or "no"."""
                 temperature=0
             )
             answer = response.choices[0].message.content.strip().lower()
-            print(f"[Agent] 🎬 Demo intent check: '{user_message[:30]}...' (after: '{last_ai_message[:30]}...') → {answer}", flush=True)
+            last_ai = conversation_history[-1].get('content', '')[:30] if conversation_history else 'none'
+            print(f"[Agent] 🎬 Demo intent check: '{user_message[:30]}' (history: {len(conversation_history)} msgs) → {answer}", flush=True)
             return answer == "yes"
         except Exception as e:
             print(f"[Agent] ⚠️ Error checking demo intent: {e}", flush=True)
@@ -1856,6 +1872,11 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
         
         # Speak the greeting
         await self._speak(greeting)
+        
+        # Save greeting to memory so demo intent check has context
+        if self.llm.memory:
+            await self.llm.memory.add_message("assistant", greeting)
+            print(f"[Agent] 💾 Greeting saved to memory", flush=True)
     
     async def _speak(self, text: str) -> None:
         """Convert text to speech and play it."""
