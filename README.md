@@ -701,4 +701,71 @@ Each company can have its own persona configuration with custom:
 ### Conversation Memory
 Firebase Firestore stores conversation history per room, allowing the AI to maintain context across the call and reference previous messages.
 
+## ⚠️ Current Limitations & Future Improvements
+
+### 🐌 Latency
+- **Serial intent detection**: Each user message triggers sequential LLM calls (closing → demo → calendly → navigation) before responding
+- **TTS delay**: ElevenLabs adds ~500ms-1s latency
+- **Solutions**: Parallelize intent checks with a single multi-label classifier; use streaming or local TTS (Piper, Coqui)
+
+### 👁️ No Vision (VLM)
+- AI can't "see" the screen—relies on DOM text extraction only
+- Misses visual context: images, charts, layout, colors, popups
+- **Solution**: Add screenshot → GPT-4V/Claude Vision pipeline for richer understanding
+
+### 🖱️ No Visible Cursor
+- Users watching the Live View don't see cursor movement
+- Playwright actions are DOM-level, not visual mouse movements
+- **Solution**: Custom cursor overlay in browser, or wait for Browserbase's cursor feature
+
+### 🎯 Demos Are Not Personalized
+- Current playbooks are preset—same demo for everyone
+- Doesn't adapt to user's specific pain points or industry
+- **Solution**: Add discovery phase at start ("What are your main challenges?") and dynamically tailor the demo flow based on responses
+
+### 🔍 No Web Search
+- AI can't search the web if asked something outside its knowledge
+- Limited to persona YAML configuration
+- **Solution**: Add RAG pipeline or tool-use with web search capability
+
+### 📊 No Analytics on User Questions
+- Not tracking what questions users ask during demos
+- Missing insights for product improvement and fine-tuning
+- **Solution**: Log queries to analytics collection, cluster by topic, identify gaps in AI knowledge
+
+### 💰 High API Costs
+- Multiple paid APIs: Browserbase, ElevenLabs, Deepgram, OpenAI, Daily.co
+- Each demo session incurs costs across all services
+- **Solution**: Self-hosted alternatives (Whisper for STT, Piper for TTS, local Playwright)
+
+### 🔁 Many LLM Calls
+- Architecture involves multiple sequential LLM calls per response:
+  - Intent detection (3 checks)
+  - Planner (plan creation + step execution)
+  - Presenter (response generation)
+  - Calendly (intent, extraction, confirmation)
+- Even with GPT-4.1-mini, this adds up
+- **Solution**: Consolidate into fewer, smarter prompts; use function calling
+
+### 📈 No Eval Pipeline
+- No systematic evaluation of conversation quality
+- No latency benchmarks tracked over time
+- **Solution**: LLM-as-judge on Firestore conversations; latency dashboards; A/B testing framework
+
+### 🌍 Other Limitations
+| Limitation | Description | Potential Solution |
+|------------|-------------|-------------------|
+| **Single language** | English only | Add i18n, multilingual TTS/STT |
+| **Memory cap** | 20 messages max | Summarization for longer context |
+| **No CRM integration** | Calendly data stays in Firebase | Sync to Salesforce/HubSpot |
+| **No follow-up automation** | No email sequences after booking | Integrate with email automation |
+| **Hardcoded prompt examples** | HealingPath examples in prompts | Move to persona YAML |
+| **No human takeover** | Can't intervene mid-demo | Add "transfer to human" trigger |
+| **No sentiment tracking** | Not detecting confusion/frustration | Add sentiment analysis layer |
+
+---
+
+## 📝 License
+
+MIT
 
