@@ -31,6 +31,8 @@ from app.services.browser_service import browser_service, BrowserSession
 from app.services.presenter_service import PresenterService
 from app.services.planner_service import PlannerService, Plan
 from app.services.demo_runner import DemoRunner, load_playbook, matches_trigger, is_demo_request, DemoState
+from app.services.calendly_service import CalendlyService
+from app.services.intent_service import IntentService
 from app.core.config import get_settings
 
 
@@ -99,6 +101,7 @@ class AIAgent:
         self.tts = TTSService()
         self.presenter = PresenterService(company_id=company_id)
         self.planner = PlannerService()
+        self.intents = IntentService()
         self.deepgram = AsyncDeepgramClient(api_key=settings.deepgram_api_key)
         
         print(f"[Agent] Initialized with persona: {self.presenter.persona.name} ({self.presenter.persona.company})", flush=True)
@@ -122,14 +125,12 @@ class AIAgent:
         self._demo_interrupted: bool = False  # True when user interrupts during a demo
         self._plan_interrupted: bool = False  # True when user interrupts during plan execution
         self._responding: bool = False  # True while in _respond() method
-        self._awaiting_scheduling_confirmation: bool = False  # True when waiting for user to confirm scheduling
-        self._on_calendly: bool = False  # True when on Calendly page for scheduling
-        self._awaiting_calendly_info: bool = False  # True when waiting for name/email for Calendly
-        self._awaiting_calendly_confirmation: bool = False  # True when waiting for user to confirm booking
-        self._calendly_user_info: dict = {}  # Store name/email for confirmation
         
         # Browser session (if product demo)
         self.browser_session: Optional[BrowserSession] = None
+        
+        # Calendly service (initialized when browser session is available)
+        self.calendly: Optional[CalendlyService] = None
         
         # Demo runner (for scripted playbooks)
         self.demo_runner: Optional[DemoRunner] = None
@@ -150,6 +151,10 @@ class AIAgent:
         # Deepgram connection
         self._dg_connection = None
         self._dg_task = None
+    
+    # =========================================================================
+    # ROOM MANAGEMENT
+    # =========================================================================
     
     async def join_room(self, room_name: str, room_url: str, token: str) -> None:
         """Join a Daily room as an AI participant."""
@@ -293,6 +298,17 @@ class AIAgent:
                         "click_element": self._browser_click,
                     }
                 )
+                
+                # Initialize Calendly service for scheduling
+                async def save_to_memory(role: str, content: str):
+                    if self.llm.memory:
+                        await self.llm.memory.add_message(role, content)
+                
+                self.calendly = CalendlyService(
+                    browser_session=self.browser_session,
+                    speak_callback=self._speak,
+                    memory_callback=save_to_memory
+                )
             
             # Another small delay before starting pipeline
             await asyncio.sleep(0.5)
@@ -306,6 +322,10 @@ class AIAgent:
             traceback.print_exc()
             self.is_running = False
             raise
+    
+    # =========================================================================
+    # AUDIO PIPELINE (STT, TTS, Deepgram)
+    # =========================================================================
     
     async def _start_pipeline(self) -> None:
         """Start the audio processing pipeline."""
@@ -401,6 +421,7 @@ class AIAgent:
                     self._run_deepgram_listener(connection),
                     self._audio_receive_loop(),
                     self._transcript_process_loop(),
+                    self._heartbeat_loop(),  # Keep WebSocket alive
                 )
                 
         except Exception as e:
@@ -470,6 +491,45 @@ class AIAgent:
                 if self.is_running:
                     print(f"[Agent] Transcript processing error: {e}")
     
+    async def _heartbeat_loop(self) -> None:
+        """Send periodic heartbeat to keep WebSocket connection alive."""
+        print("[Agent] 💓 Starting heartbeat loop (every 30s)...")
+        heartbeat_count = 0
+        
+        while self.is_running:
+            try:
+                await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+                
+                if not self.is_running:
+                    break
+                
+                heartbeat_count += 1
+                
+                # Force signaling traffic by fetching participants and updating subscription
+                # This should keep the WebSocket connection alive
+                participants = self.client.participants()
+                participant_count = len(participants) if participants else 0
+                
+                # Also do a small subscription update to force signaling
+                self.client.update_subscription_profiles({
+                    "base": {
+                        "camera": "unsubscribed",  
+                        "microphone": "subscribed",
+                        "screenVideo": "subscribed",
+                        "screenAudio": "subscribed"
+                    }
+                })
+                
+                print(f"[Agent] 💓 Heartbeat #{heartbeat_count} (participants: {participant_count})", flush=True)
+                
+            except Exception as e:
+                if self.is_running:
+                    print(f"[Agent] Heartbeat error (continuing): {e}", flush=True)
+    
+    # =========================================================================
+    # RESPONSE ORCHESTRATION (Main conversation flow)
+    # =========================================================================
+    
     async def _respond(self, user_message: str) -> None:
         """Generate and speak a response, potentially with browser actions."""
         self.is_speaking = True
@@ -479,53 +539,52 @@ class AIAgent:
         try:
             print(f"[Agent] 💬 Responding to: '{user_message}'")
             
-            # === CHECK FOR SCHEDULING CONFIRMATION ===
-            if self._awaiting_scheduling_confirmation:
-                is_yes = await self._check_affirmative_response(user_message)
-                if is_yes:
-                    print(f"[Agent] 📅 User confirmed scheduling, opening Calendly", flush=True)
-                    await self._open_calendly()
+            # === CHECK FOR CALENDLY INTERACTIONS ===
+            if self.calendly:
+                # Check for scheduling confirmation (after closing message)
+                if self.calendly.awaiting_scheduling_confirmation:
+                    is_yes = await self.intents.check_affirmative_response(user_message)
+                    if is_yes:
+                        print(f"[Agent] 📅 User confirmed scheduling, opening Calendly", flush=True)
+                        closing_config = getattr(self.presenter.persona, 'closing', {})
+                        calendly_url = closing_config.get('calendly_url', '')
+                        scheduling_message = closing_config.get('scheduling_message', 
+                            "I'm opening up the calendar now. Take a look and let me know what time works best for you!")
+                        await self.calendly.open_calendly(calendly_url, scheduling_message)
+                        return
+                    else:
+                        print(f"[Agent] 👋 User declined scheduling", flush=True)
+                        self.calendly.awaiting_scheduling_confirmation = False
+                        await self._speak("No problem at all! Feel free to reach out anytime. Take care!")
+                        return
+                
+                # Check for booking confirmation
+                if self.calendly.awaiting_confirmation:
+                    print(f"[Agent] 📅 Processing Calendly confirmation", flush=True)
+                    await self.calendly.handle_confirmation(user_message)
                     return
-                else:
-                    # User declined, just acknowledge
-                    print(f"[Agent] 👋 User declined scheduling", flush=True)
-                    self._awaiting_scheduling_confirmation = False
-                    await self._speak("No problem at all! Feel free to reach out anytime. Take care!")
+                
+                # Check for form filling
+                if self.calendly.awaiting_info:
+                    print(f"[Agent] 📅 Processing Calendly form info", flush=True)
+                    await self.calendly.fill_form(user_message)
                     return
-            
-            # === CHECK FOR CALENDLY BOOKING CONFIRMATION ===
-            if self._awaiting_calendly_confirmation and self.browser_session:
-                print(f"[Agent] 📅 Processing Calendly confirmation", flush=True)
-                await self._handle_calendly_confirmation(user_message)
-                return
-            
-            # === CHECK FOR CALENDLY FORM FILLING ===
-            if self._awaiting_calendly_info and self.browser_session:
-                print(f"[Agent] 📅 Processing Calendly form info", flush=True)
-                await self._fill_calendly_form(user_message)
-                return
-            
-            # === CHECK FOR CALENDLY INTERACTION ===
-            if self._on_calendly and self.browser_session:
-                print(f"[Agent] 📅 On Calendly, handling scheduling interaction", flush=True)
-                await self._handle_calendly_interaction(user_message)
-                return
+                
+                # Check for calendar interaction
+                if self.calendly.on_calendly:
+                    print(f"[Agent] 📅 On Calendly, handling scheduling interaction", flush=True)
+                    await self.calendly.handle_interaction(user_message)
+                    return
             
             # === CHECK FOR PLAYBOOK TRIGGER ===
             if self.playbook and self.browser_session:
-                # Get conversation context for better demo detection
-                from openai import AsyncOpenAI
-                from app.core.config import get_settings
-                settings = get_settings()
-                client = AsyncOpenAI(api_key=settings.openai_api_key)
-                
                 # Get conversation history for context
                 conversation_history = []
                 if self.llm.memory:
                     conversation_history = self.llm.memory.get_messages_for_llm()
                 
                 # Use LLM to detect demo intent with full conversation context
-                if await self._check_demo_intent(user_message, conversation_history, client):
+                if await self.intents.check_demo_intent(user_message, conversation_history):
                     print(f"[Agent] 🎬 Playbook triggered: {self.playbook.name}", flush=True)
                     await self._run_playbook()
                     return
@@ -533,7 +592,8 @@ class AIAgent:
             # === CHECK FOR CLOSING INTENT ===
             closing_config = getattr(self.presenter.persona, 'closing', {})
             if closing_config:
-                is_closing = await self._check_closing_intent(user_message)
+                history_for_closing = self.llm.memory.get_messages_for_llm() if self.llm.memory else []
+                is_closing = await self.intents.check_closing_intent(user_message, history_for_closing)
                 if is_closing:
                     print(f"[Agent] 👋 Closing intent detected", flush=True)
                     await self._handle_closing(closing_config)
@@ -857,7 +917,7 @@ class AIAgent:
                     print(f"[Agent] 🖥️ New screen: {screen_context.get('name', 'unknown')}", flush=True)
                 
                 # Ask LLM if user needs a follow-up response
-                follow_up = await self._check_needs_follow_up(
+                follow_up = await self.intents.check_needs_follow_up(
                     user_message=user_message,
                     target_section=target_section,
                     page_text=page_text
@@ -922,216 +982,11 @@ class AIAgent:
             is_continuation=is_continuation
         )
     
-    async def _check_if_on_home_page(
-        self,
-        page_text: str,
-        home_page_description: str
-    ) -> bool:
-        """
-        Use LLM to determine if we're on the home page by comparing
-        current page content to the home page description.
-        
-        Returns:
-            bool: True if on home page, False otherwise
-        """
-        if not home_page_description:
-            # No description provided, assume we're on home page
-            return True
-        
-        from openai import AsyncOpenAI
-        settings = get_settings()
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-        
-        prompt = f"""Compare the current page content to the home page description and determine if we're on the home page.
-
-HOME PAGE DESCRIPTION:
-{home_page_description}
-
-CURRENT PAGE CONTENT:
-{page_text[:1500]}
-
-Question: Based on the content, is the user currently on the home page described above?
-
-Answer with ONLY "yes" or "no" (lowercase, nothing else)."""
-
-        try:
-            response = await client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0.0
-            )
-            
-            answer = response.choices[0].message.content.strip().lower()
-            is_home = answer == "yes"
-            
-            print(f"[Agent] 🏠 LLM home check: '{answer}' → {is_home}", flush=True)
-            return is_home
-            
-        except Exception as e:
-            print(f"[Agent] ⚠️ Home page check failed: {e}", flush=True)
-            # On error, assume we're on home page to avoid unnecessary navigation
-            return True
+    # NOTE: Intent detection methods moved to intent_service.py
     
-    async def _check_needs_follow_up(
-        self, 
-        user_message: str, 
-        target_section: str,
-        page_text: str
-    ) -> dict:
-        """
-        Ask LLM if the user's message needs a follow-up explanation after navigation.
-        
-        Returns:
-            dict with 'needs_response' (bool) and 'topic' (str)
-        """
-        from openai import AsyncOpenAI
-        settings = get_settings()
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-        
-        prompt = f"""After navigating to the "{target_section}" section, does the user need a spoken explanation?
-
-USER'S ORIGINAL MESSAGE: "{user_message}"
-
-PAGE CONTENT (what's now visible):
-{page_text[:1000]}
-
-Determine:
-1. Did the user just want to be taken somewhere? (e.g., "take me to X", "go to X", "show me X")
-   → No explanation needed, they can see it now.
-
-2. Did the user ask a question or want something explained? (e.g., "explain X", "how does X work", "what is X", "tell me about X", "I'm confused about X")
-   → Explanation IS needed.
-
-OUTPUT JSON:
-{{
-    "needs_response": true or false,
-    "reason": "brief reason",
-    "topic": "what to explain (if needed)"
-}}
-
-Only output valid JSON."""
-
-        try:
-            response = await client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=100,
-                temperature=0.1,
-                response_format={"type": "json_object"}
-            )
-            
-            import json
-            result = json.loads(response.choices[0].message.content or "{}")
-            return result
-            
-        except Exception as e:
-            print(f"[Agent] Follow-up check error: {e}", flush=True)
-            return {"needs_response": False}
-    
-    async def _check_closing_intent(self, user_message: str) -> bool:
-        """
-        Use LLM to detect if user is signaling they're done with the demo/conversation.
-        Examples: "all good", "that's all", "I've seen enough", "no thanks", "I'm good"
-        """
-        from openai import AsyncOpenAI
-        from app.core.config import get_settings
-        settings = get_settings()
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-        
-        # Get conversation history for context
-        all_history = self.llm.memory.get_messages_for_llm() if self.llm.memory else []
-        history = all_history[-4:] if all_history else []
-        history_str = "\n".join([
-            f"{'AI' if m.get('role') == 'assistant' else 'User'}: {m.get('content', '')[:100]}"
-            for m in history
-        ])
-        
-        prompt = f"""Determine if the user is signaling they are DONE with the conversation/demo and ready to wrap up.
-
-RECENT CONVERSATION:
-{history_str}
-
-USER'S LATEST MESSAGE: "{user_message}"
-
-Closing signals include:
-- "all good", "that's all", "I'm good", "no thanks"
-- "I've seen enough", "that's it for me"
-- "no more questions", "I think I'm done"
-- Polite declines to see more features
-
-NOT closing signals:
-- Asking questions about features
-- Requesting to see something else
-- "Sure" or "yes" (agreeing to continue)
-- Any request for more information
-
-Is the user signaling they want to END the conversation? Answer ONLY "yes" or "no"."""
-
-        try:
-            response = await client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0.0
-            )
-            
-            answer = response.choices[0].message.content.strip().lower()
-            is_closing = answer == "yes"
-            print(f"[Agent] 👋 Closing intent check: '{user_message[:30]}...' → {is_closing}", flush=True)
-            return is_closing
-            
-        except Exception as e:
-            print(f"[Agent] Closing intent check error: {e}", flush=True)
-            return False
-    
-    async def _check_demo_intent(self, user_message: str, conversation_history: list, client) -> bool:
-        """Check if user wants a FULL product demo/tour using LLM with conversation context."""
-        # Format recent conversation for context
-        history_text = ""
-        for msg in conversation_history[-6:]:  # Last 3 exchanges
-            role = "AI" if msg.get("role") == "assistant" else "User"
-            content = msg.get("content", "")[:100]
-            history_text += f"{role}: {content}\n"
-        
-        prompt = f"""Determine if the user wants a FULL product demo or tour (showing ALL features).
-
-RECENT CONVERSATION:
-{history_text}
-User: {user_message}
-
-EXAMPLES:
-
-Example 1 - YES (full tour offer):
-AI: "Do you want me to give you a quick tour of Healing Path?"
-User: "Sure. Yeah."
-→ Answer: YES (AI offered a FULL tour, user accepted)
-
-Example 2 - NO (feature-specific):
-AI: "So here's the meditation section. Want me to walk you through how this works?"
-User: "Yeah"
-→ Answer: NO (AI asked about THIS specific section, not a full tour)
-
-RULES:
-- Answer "yes" if user accepts an offer for a FULL tour/demo of the product
-- Answer "no" if AI was explaining a specific feature and asked about THAT feature
-
-Answer ONLY "yes" or "no"."""
-
-        try:
-            response = await client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0
-            )
-            answer = response.choices[0].message.content.strip().lower()
-            last_ai = conversation_history[-1].get('content', '')[:30] if conversation_history else 'none'
-            print(f"[Agent] 🎬 Demo intent check: '{user_message[:30]}' (history: {len(conversation_history)} msgs) → {answer}", flush=True)
-            return answer == "yes"
-        except Exception as e:
-            print(f"[Agent] ⚠️ Error checking demo intent: {e}", flush=True)
-            return False
+    # =========================================================================
+    # CLOSING & SCHEDULING FLOW
+    # =========================================================================
     
     async def _handle_closing(self, closing_config: dict) -> None:
         """Handle the closing flow - say goodbye and offer to schedule a call."""
@@ -1147,627 +1002,19 @@ Answer ONLY "yes" or "no"."""
         print(f"[Agent] 👋 Speaking closing message", flush=True)
         await self._speak(closing_message)
         
-        # Set flag to wait for scheduling confirmation
-        self._awaiting_scheduling_confirmation = True
+        # Set flag to wait for scheduling confirmation (use CalendlyService if available)
+        if self.calendly:
+            self.calendly.awaiting_scheduling_confirmation = True
         
         # Save to memory
         if self.llm.memory:
             await self.llm.memory.add_message("assistant", closing_message)
     
-    async def _check_affirmative_response(self, user_message: str) -> bool:
-        """Check if user's response is affirmative using LLM."""
-        from openai import AsyncOpenAI
-        from app.core.config import get_settings
-        settings = get_settings()
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-        
-        prompt = f"""The AI just asked the user if they'd like to schedule a call with the founder.
-
-User's response: "{user_message}"
-
-Is this an affirmative response (yes, they want to schedule)?
-
-Respond with ONLY "yes" or "no"."""
-
-        try:
-            response = await client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0
-            )
-            answer = response.choices[0].message.content.strip().lower()
-            print(f"[Agent] 🤔 Affirmative check: '{user_message}' -> {answer}", flush=True)
-            return answer == "yes"
-        except Exception as e:
-            print(f"[Agent] ⚠️ Error checking affirmative: {e}", flush=True)
-            return False
+    # NOTE: Calendly methods moved to calendly_service.py
     
-    async def _open_calendly(self) -> None:
-        """Open Calendly link in browser and speak scheduling message."""
-        self._awaiting_scheduling_confirmation = False
-        
-        closing_config = getattr(self.presenter.persona, 'closing', {})
-        calendly_url = closing_config.get('calendly_url', '')
-        scheduling_message = closing_config.get('scheduling_message', 
-            "I'm opening up the calendar now. Take a look and let me know what time works best for you!")
-        
-        if calendly_url and self.browser_session:
-            print(f"[Agent] 📅 Opening Calendly: {calendly_url}", flush=True)
-            await self._speak(scheduling_message)
-            await self.browser_session.navigate(calendly_url)
-            await asyncio.sleep(1.0)  # Wait for Calendly to load
-            self._on_calendly = True
-            print(f"[Agent] ✓ Calendly opened, ready for scheduling", flush=True)
-        else:
-            await self._speak("I'd love to help you schedule, but I don't have the calendar link handy. You can reach out directly to schedule a call!")
-        
-        # Save to memory
-        if self.llm.memory:
-            await self.llm.memory.add_message("assistant", scheduling_message)
-    
-    async def _handle_calendly_interaction(self, user_message: str) -> None:
-        """Handle user interactions on Calendly page (day/time selection)."""
-        from openai import AsyncOpenAI
-        from app.core.config import get_settings
-        settings = get_settings()
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-        
-        # Get current page content to find clickable elements
-        page = self.browser_session.page
-        if not page:
-            await self._speak("I'm having trouble with the calendar. Could you try again?")
-            return
-        
-        # Check if user wants to go back/scroll/select using LLM
-        try:
-            prompt = f"""The user is on a Calendly scheduling page. They said: "{user_message}"
-
-What is the user's intent?
-- "select" = They mention a SPECIFIC date (like "January 5th", "the 12th", "Monday") OR a specific time (like "10am", "2:30")
-- "scroll" = They want to scroll to see more times (like "scroll down", "show more", "see other times")
-- "back" = They want to go back to the previous page, exit scheduling, or cancel
-
-IMPORTANT: If they mention ANY specific date or time, answer "select".
-
-Answer ONLY one word: "back", "scroll", or "select"."""
-            
-            response = await client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0
-            )
-            intent = response.choices[0].message.content.strip().lower()
-            print(f"[Agent] 📅 Calendly intent: {intent}", flush=True)
-            
-            if intent == "scroll":
-                print(f"[Agent] 📅 User wants to scroll on Calendly", flush=True)
-                try:
-                    # Debug: Print scrollable elements
-                    scrollable_info = await page.evaluate("""
-                        () => {
-                            const results = [];
-                            const allElements = document.querySelectorAll('*');
-                            for (const el of allElements) {
-                                if (el.scrollHeight > el.clientHeight && el.clientHeight > 50) {
-                                    results.push({
-                                        tag: el.tagName,
-                                        class: el.className.substring(0, 100),
-                                        id: el.id,
-                                        scrollHeight: el.scrollHeight,
-                                        clientHeight: el.clientHeight,
-                                        overflow: getComputedStyle(el).overflow
-                                    });
-                                }
-                            }
-                            return results.slice(0, 10);  // Limit to 10
-                        }
-                    """)
-                    print(f"[Agent] 📜 Scrollable elements found:", flush=True)
-                    for el in scrollable_info:
-                        print(f"  - {el['tag']} class='{el['class'][:50]}' id='{el['id']}' scroll={el['scrollHeight']} client={el['clientHeight']} overflow={el['overflow']}", flush=True)
-                    # Target the Calendly time slots container directly (booking-kit_spotlist-list)
-                    scrolled = await page.evaluate("""
-                        () => {
-                            // Look for the booking-kit spotlist container (Calendly's time slots)
-                            const spotlist = document.querySelector('[class*="spotlist-list"]') ||
-                                            document.querySelector('[class*="booking-kit_spotlist"]');
-                            if (spotlist && spotlist.scrollHeight > spotlist.clientHeight) {
-                                spotlist.scrollBy(0, 200);
-                                return 'spotlist';
-                            }
-                            
-                            // Fallback: find any div with overflow:auto and scrollable
-                            const allDivs = document.querySelectorAll('div');
-                            for (const div of allDivs) {
-                                const style = getComputedStyle(div);
-                                if ((style.overflow === 'auto' || style.overflowY === 'auto') &&
-                                    div.scrollHeight > div.clientHeight && 
-                                    div.clientHeight > 100) {
-                                    div.scrollBy(0, 200);
-                                    return 'overflow-auto';
-                                }
-                            }
-                            
-                            return null;
-                        }
-                    """)
-                    
-                    if scrolled:
-                        print(f"[Agent] ✓ Scrolled using {scrolled}", flush=True)
-                    else:
-                        print(f"[Agent] ⚠️ No scrollable container found", flush=True)
-                    
-                    await asyncio.sleep(0.3)
-                    await self._speak("Here you go! Let me know which time works for you.")
-                    return
-                except Exception as e:
-                    print(f"[Agent] ⚠️ Could not scroll: {e}", flush=True)
-                    await self._speak("I'm having trouble scrolling. You can scroll manually to see more times.")
-                    return
-            
-            if intent == "back":
-                print(f"[Agent] 📅 User wants to go back on Calendly", flush=True)
-                # Try clicking back button or using browser back
-                try:
-                    back_clicked = False
-                    for selector in ['button:has-text("Back")', 'button:has-text("←")', '[aria-label*="back" i]', '[aria-label*="previous" i]']:
-                        try:
-                            await page.click(selector, timeout=1000)
-                            back_clicked = True
-                            print(f"[Agent] ✓ Clicked back button", flush=True)
-                            break
-                        except:
-                            continue
-                    
-                    if not back_clicked:
-                        # Use browser back
-                        await page.go_back()
-                        print(f"[Agent] ✓ Used browser back", flush=True)
-                    
-                    await asyncio.sleep(0.5)
-                    self._awaiting_calendly_info = False
-                    await self._speak("No problem! Here's the calendar again. Which date works better for you?")
-                    return
-                except Exception as e:
-                    print(f"[Agent] ⚠️ Could not go back: {e}", flush=True)
-        except Exception as e:
-            print(f"[Agent] ⚠️ Error checking calendly intent: {e}", flush=True)
-        
-        # Extract clickable elements from Calendly
-        clickable_elements = await page.evaluate("""
-            () => {
-                const elements = [];
-                
-                // Find ALL buttons in the calendar - Calendly uses buttons for dates
-                document.querySelectorAll('button').forEach(el => {
-                    const text = el.textContent.trim();
-                    const ariaLabel = el.getAttribute('aria-label') || '';
-                    const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
-                    
-                    // Skip if disabled or empty
-                    if (disabled || !text) return;
-                    
-                    // Date buttons - usually just numbers 1-31
-                    if (/^\\d{1,2}$/.test(text)) {
-                        elements.push({type: 'date', text: text, ariaLabel: ariaLabel});
-                    }
-                    // Time slots - contain : or am/pm
-                    else if (text.match(/\\d{1,2}:\\d{2}/) || text.match(/\\d{1,2}\\s*(am|pm|AM|PM)/)) {
-                        elements.push({type: 'time', text: text});
-                    }
-                    // Action buttons
-                    else if (text.toLowerCase().includes('next') || 
-                             text.toLowerCase().includes('confirm') || 
-                             text.toLowerCase().includes('schedule')) {
-                        elements.push({type: 'action', text: text});
-                    }
-                });
-                
-                // Also check for clickable table cells (some calendar implementations)
-                document.querySelectorAll('td[role="button"], td[tabindex="0"], [role="gridcell"] button').forEach(el => {
-                    const text = el.textContent.trim();
-                    if (/^\\d{1,2}$/.test(text) && !el.getAttribute('aria-disabled')) {
-                        elements.push({type: 'date', text: text, ariaLabel: el.getAttribute('aria-label') || ''});
-                    }
-                });
-                
-                return elements;
-            }
-        """)
-        
-        print(f"[Agent] 📅 Calendly elements found: {clickable_elements[:10]}...", flush=True)
-        
-        # Use LLM to determine what to click
-        prompt = f"""The user is on a Calendly scheduling page. They said: "{user_message}"
-
-Available clickable elements on the page:
-{clickable_elements}
-
-What should I click?
-
-RULES:
-- For DATES (like "January 5th", "the 5th") → respond with just the number: "5"
-- For TIMES (like "5am", "10:30am", "2pm") → respond with EXACT time text from the list: "5:00am" or "10:30am"
-- For confirm/next → respond with "Next" or "Confirm"
-
-IMPORTANT: If user says a TIME like "5am", find the matching time in the list (e.g., "5:00am") - do NOT respond with just "5"!
-
-Respond with ONLY the exact text to click. If nothing matches, respond "NONE"."""
-
-        try:
-            response = await client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=50,
-                temperature=0
-            )
-            target_text = response.choices[0].message.content.strip()
-            print(f"[Agent] 📅 LLM says click: '{target_text}'", flush=True)
-            
-            if target_text == "NONE" or not target_text:
-                await self._speak("I couldn't find that on the calendar. Could you try saying the day or time again?")
-                return
-            
-            # Try to click the element - use Playwright locator (most reliable)
-            clicked = False
-            try:
-                await page.locator(f'button:has-text("{target_text}")').first.click(timeout=500)
-                clicked = True
-                print(f"[Agent] ✓ Clicked: '{target_text}'", flush=True)
-            except:
-                # Fallback: JS click
-                try:
-                    await page.evaluate("""
-                        (targetText) => {
-                            const buttons = document.querySelectorAll('button');
-                            for (const btn of buttons) {
-                                if (btn.textContent.trim() === targetText || 
-                                    btn.textContent.toLowerCase().includes(targetText.toLowerCase())) {
-                                    btn.click();
-                                    return true;
-                                }
-                            }
-                            return false;
-                        }
-                    """, target_text)
-                    clicked = True
-                    print(f"[Agent] ✓ Clicked (JS): '{target_text}'", flush=True)
-                except:
-                    pass
-            
-            if clicked:
-                await asyncio.sleep(0.5)  # Brief wait for UI
-                
-                # Check if we clicked a time (need to click Next)
-                if any(c in target_text.lower() for c in ['am', 'pm', ':']):
-                    await asyncio.sleep(0.8)  # Wait for Next button to appear
-                    
-                    # Click Next button using JS (most reliable for Calendly)
-                    next_clicked = await page.evaluate("""
-                        () => {
-                            const buttons = document.querySelectorAll('button');
-                            for (const btn of buttons) {
-                                const text = btn.textContent.trim().toLowerCase();
-                                if (text === 'next' || text.includes('next')) {
-                                    btn.click();
-                                    return true;
-                                }
-                            }
-                            return false;
-                        }
-                    """)
-                    
-                    if next_clicked:
-                        print(f"[Agent] ✓ Clicked Next button", flush=True)
-                        await asyncio.sleep(0.5)  # Wait for form
-                        self._awaiting_calendly_info = True
-                        await self._speak("Got it! What's your name and email so I can confirm the booking?")
-                    else:
-                        print(f"[Agent] ⚠️ Next button not found", flush=True)
-                        await self._speak("I selected the time. Could you click Next to continue?")
-                else:
-                    await self._speak("Perfect! Now which time slot works for you?")
-            else:
-                await self._speak("I couldn't click that. Could you try saying it differently?")
-                print(f"[Agent] ⚠️ Failed to click: '{target_text}'", flush=True)
-                
-        except Exception as e:
-            print(f"[Agent] ⚠️ Calendly interaction error: {e}", flush=True)
-            await self._speak("I'm having trouble with the calendar. Could you try again?")
-    
-    async def _fill_calendly_form(self, user_message: str) -> None:
-        """Fill in the Calendly booking form with user's name and email."""
-        from openai import AsyncOpenAI
-        from app.core.config import get_settings
-        settings = get_settings()
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-        
-        # First check if user wants to change date/time instead of providing info
-        intent_prompt = f"""The user was asked for their name and email to book a meeting. They said: "{user_message}"
-
-What is their intent?
-- "change_time" = They want to go back and pick a different date or time (mentions a day, date, or wants to change)
-- "provide_info" = They are providing their name and/or email
-
-Answer ONLY: "change_time" or "provide_info"."""
-
-        try:
-            intent_response = await client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": intent_prompt}],
-                max_tokens=20,
-                temperature=0
-            )
-            intent = intent_response.choices[0].message.content.strip().lower()
-            print(f"[Agent] 📅 Form intent: {intent}", flush=True)
-            
-            if intent == "change_time":
-                # User wants to go back to calendar
-                print(f"[Agent] 📅 User wants to change date/time, going back", flush=True)
-                self._awaiting_calendly_info = False
-                page = self.browser_session.page
-                if page:
-                    try:
-                        # Click back or use browser back
-                        back_clicked = False
-                        for selector in ['button:has-text("Back")', '[aria-label*="back" i]']:
-                            try:
-                                await page.click(selector, timeout=1000)
-                                back_clicked = True
-                                break
-                            except:
-                                continue
-                        if not back_clicked:
-                            await page.go_back()
-                        await asyncio.sleep(0.5)
-                    except:
-                        pass
-                
-                # Now handle as a calendar interaction
-                await self._handle_calendly_interaction(user_message)
-                return
-        except Exception as e:
-            print(f"[Agent] ⚠️ Error checking form intent: {e}", flush=True)
-        
-        # Use LLM to extract name and email from user's message
-        prompt = f"""Extract the name and email from this message: "{user_message}"
-
-The user is providing their contact info for a calendar booking.
-
-Respond in this exact format (nothing else):
-NAME: [extracted name or MISSING]
-EMAIL: [extracted email or MISSING]
-
-Examples:
-- "John Smith, john@email.com" → NAME: John Smith, EMAIL: john@email.com
-- "My name is Sarah and email is sarah@test.com" → NAME: Sarah, EMAIL: sarah@test.com
-- "just use mehdi@gmail.com" → NAME: MISSING, EMAIL: mehdi@gmail.com"""
-
-        try:
-            response = await client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=100,
-                temperature=0
-            )
-            result = response.choices[0].message.content.strip()
-            print(f"[Agent] 📅 Extracted info: {result}", flush=True)
-            
-            # Parse the result
-            name = None
-            email = None
-            for line in result.split('\n'):
-                if line.startswith('NAME:'):
-                    val = line.replace('NAME:', '').strip()
-                    if val and val != 'MISSING':
-                        name = val
-                elif line.startswith('EMAIL:'):
-                    val = line.replace('EMAIL:', '').strip()
-                    if val and val != 'MISSING':
-                        email = val
-            
-            # Check what we're missing
-            if not name and not email:
-                await self._speak("I didn't catch that. Could you tell me your name and email?")
-                return
-            elif not name:
-                await self._speak(f"Got your email. What's your name?")
-                return
-            elif not email:
-                await self._speak(f"Thanks {name}! What's your email address?")
-                return
-            
-            # We have both - fill the form
-            page = self.browser_session.page
-            if not page:
-                await self._speak("I'm having trouble with the form. Could you try again?")
-                return
-            
-            print(f"[Agent] 📅 Filling form - Name: {name}, Email: {email}", flush=True)
-            
-            # Fill name field
-            try:
-                # Try common Calendly name field selectors
-                name_filled = False
-                for selector in ['input[name="full_name"]', 'input[name="name"]', 'input[placeholder*="name" i]', 'input[aria-label*="name" i]']:
-                    try:
-                        await page.locator(selector).first.fill(name, timeout=1000)
-                        name_filled = True
-                        print(f"[Agent] ✓ Filled name with selector: {selector}", flush=True)
-                        break
-                    except:
-                        continue
-                
-                if not name_filled:
-                    # Fallback: find first visible text input
-                    await page.locator('input[type="text"]').first.fill(name, timeout=2000)
-                    print(f"[Agent] ✓ Filled name (fallback)", flush=True)
-            except Exception as e:
-                print(f"[Agent] ⚠️ Failed to fill name: {e}", flush=True)
-            
-            # Fill email field
-            try:
-                email_filled = False
-                for selector in ['input[name="email"]', 'input[type="email"]', 'input[placeholder*="email" i]', 'input[aria-label*="email" i]']:
-                    try:
-                        await page.locator(selector).first.fill(email, timeout=1000)
-                        email_filled = True
-                        print(f"[Agent] ✓ Filled email with selector: {selector}", flush=True)
-                        break
-                    except:
-                        continue
-                
-                if not email_filled:
-                    print(f"[Agent] ⚠️ Could not find email field", flush=True)
-            except Exception as e:
-                print(f"[Agent] ⚠️ Failed to fill email: {e}", flush=True)
-            
-            await asyncio.sleep(0.3)
-            
-            # Store the info and ask for confirmation before scheduling
-            self._calendly_user_info = {'name': name, 'email': email}
-            self._awaiting_calendly_info = False
-            self._awaiting_calendly_confirmation = True
-            
-            await self._speak(f"I've filled in {name} with email {email}. Does that look correct? Say yes to confirm or let me know what to change.")
-                
-        except Exception as e:
-            print(f"[Agent] ⚠️ Calendly form error: {e}", flush=True)
-            await self._speak("I'm having trouble with the form. Could you try again?")
-    
-    async def _handle_calendly_confirmation(self, user_message: str) -> None:
-        """Handle user's confirmation or correction of Calendly booking info."""
-        from openai import AsyncOpenAI
-        from app.core.config import get_settings
-        settings = get_settings()
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-        
-        name = self._calendly_user_info.get('name', '')
-        email = self._calendly_user_info.get('email', '')
-        
-        # Use LLM to determine if this is confirmation or correction
-        prompt = f"""The user was asked to confirm their booking info: Name="{name}", Email="{email}"
-They responded: "{user_message}"
-
-What is their intent?
-- "confirm" = they're happy with the info, proceed with booking
-- "change_name" = they want to change their name (extract new name)
-- "change_email" = they want to change their email (extract new email)  
-- "change_both" = they want to change both (extract new values)
-- "cancel" = they want to cancel/go back
-
-Respond in format:
-INTENT: [confirm/change_name/change_email/change_both/cancel]
-NEW_NAME: [new name if changing, otherwise SAME]
-NEW_EMAIL: [new email if changing, otherwise SAME]"""
-
-        try:
-            response = await client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=100,
-                temperature=0
-            )
-            result = response.choices[0].message.content.strip()
-            print(f"[Agent] 📅 Confirmation response: {result}", flush=True)
-            
-            # Parse response
-            intent = "confirm"
-            new_name = name
-            new_email = email
-            
-            for line in result.split('\n'):
-                if line.startswith('INTENT:'):
-                    intent = line.replace('INTENT:', '').strip().lower()
-                elif line.startswith('NEW_NAME:'):
-                    val = line.replace('NEW_NAME:', '').strip()
-                    if val and val != 'SAME':
-                        new_name = val
-                elif line.startswith('NEW_EMAIL:'):
-                    val = line.replace('NEW_EMAIL:', '').strip()
-                    if val and val != 'SAME':
-                        new_email = val
-            
-            if intent == "cancel":
-                self._awaiting_calendly_confirmation = False
-                self._on_calendly = False
-                await self._speak("No problem, we can skip the scheduling for now. Is there anything else I can help you with?")
-                return
-            
-            if intent in ["change_name", "change_email", "change_both"]:
-                # Update stored info
-                self._calendly_user_info = {'name': new_name, 'email': new_email}
-                
-                # Refill the form
-                page = self.browser_session.page
-                if page:
-                    if intent in ["change_name", "change_both"]:
-                        try:
-                            for selector in ['input[name="full_name"]', 'input[name="name"]', 'input[placeholder*="name" i]', 'input[type="text"]']:
-                                try:
-                                    await page.locator(selector).first.fill(new_name, timeout=1000)
-                                    print(f"[Agent] ✓ Updated name to: {new_name}", flush=True)
-                                    break
-                                except:
-                                    continue
-                        except Exception as e:
-                            print(f"[Agent] ⚠️ Failed to update name: {e}", flush=True)
-                    
-                    if intent in ["change_email", "change_both"]:
-                        try:
-                            for selector in ['input[name="email"]', 'input[type="email"]', 'input[placeholder*="email" i]']:
-                                try:
-                                    await page.locator(selector).first.fill(new_email, timeout=1000)
-                                    print(f"[Agent] ✓ Updated email to: {new_email}", flush=True)
-                                    break
-                                except:
-                                    continue
-                        except Exception as e:
-                            print(f"[Agent] ⚠️ Failed to update email: {e}", flush=True)
-                
-                await self._speak(f"Updated! Now showing {new_name} with email {new_email}. Does that look right?")
-                return
-            
-            # Intent is confirm - click the schedule button
-            page = self.browser_session.page
-            if not page:
-                await self._speak("I'm having trouble with the form. Could you click schedule manually?")
-                return
-            
-            try:
-                scheduled = False
-                for btn_text in ['Schedule Event', 'Confirm', 'Book', 'Submit']:
-                    try:
-                        await page.get_by_role("button", name=btn_text).first.click(timeout=1000)
-                        scheduled = True
-                        print(f"[Agent] ✓ Clicked schedule button: {btn_text}", flush=True)
-                        break
-                    except:
-                        continue
-                
-                if not scheduled:
-                    await page.locator('button[type="submit"]').first.click(timeout=2000)
-                    scheduled = True
-                    print(f"[Agent] ✓ Clicked submit button", flush=True)
-                
-                if scheduled:
-                    await asyncio.sleep(1.0)
-                    self._on_calendly = False
-                    self._awaiting_calendly_confirmation = False
-                    self._calendly_user_info = {}
-                    await self._speak(f"You're all set, {name}! The meeting is booked. You'll receive a confirmation email shortly. It was great chatting with you!")
-                else:
-                    await self._speak("Could you click the Schedule Event button to complete the booking?")
-                    
-            except Exception as e:
-                print(f"[Agent] ⚠️ Failed to schedule: {e}", flush=True)
-                await self._speak("Could you click the Schedule Event button to complete the booking?")
-                
-        except Exception as e:
-            print(f"[Agent] ⚠️ Confirmation error: {e}", flush=True)
-            await self._speak("I didn't catch that. Should I go ahead and schedule, or would you like to change something?")
+    # =========================================================================
+    # SCREEN DETECTION & CONTEXT
+    # =========================================================================
     
     async def _detect_current_screen(self, page_text: str) -> Optional[dict]:
         """
@@ -1832,6 +1079,10 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
         except Exception as e:
             print(f"[Agent] ⚠️ Screen detection failed: {e}", flush=True)
             return None
+    
+    # =========================================================================
+    # GREETING & SPEECH
+    # =========================================================================
     
     async def _greet_user(self, user_name: str) -> None:
         """Greet a user when they join the call."""
@@ -1919,6 +1170,10 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
                 print(f"[Agent] ✓ Finished speaking ({chunks_sent} chunks)", flush=True)
         else:
             print(f"[Agent] ⚠️ Cannot send audio: mic={self.mic is not None}", flush=True)
+    
+    # =========================================================================
+    # BROWSER ACTIONS
+    # =========================================================================
     
     async def _execute_actions(self, plan: Plan) -> None:
         """Execute all actions from the plan (supports multi-step navigation)."""
@@ -2050,6 +1305,10 @@ Answer with ONLY the screen ID (e.g., "dashboard", "journaling", "meditation") o
         except Exception as e:
             print(f"[Agent] ⚠️ Could not refresh page context: {e}", flush=True)
             return None
+    
+    # =========================================================================
+    # DEMO PLAYBOOK
+    # =========================================================================
     
     async def _run_playbook(self) -> None:
         """Run the loaded playbook as a scripted demo."""
@@ -2213,6 +1472,10 @@ Answer with just the element text:"""
         except Exception as e:
             print(f"[Agent] Error finding element match: {e}", flush=True)
             return None
+    
+    # =========================================================================
+    # CLEANUP
+    # =========================================================================
     
     async def leave_room(self) -> None:
         """Leave the current room and clean up."""
