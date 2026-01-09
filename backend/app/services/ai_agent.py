@@ -31,7 +31,7 @@ from app.services.browser_service import browser_service, BrowserSession
 from app.services.presenter_service import PresenterService
 from app.services.planner_service import PlannerService, Plan
 from app.services.demo_runner import DemoRunner, load_playbook, matches_trigger, is_demo_request, DemoState
-from app.services.calendly_service import CalendlyService
+from app.services.scheduling_agent import SchedulingAgent
 from app.services.intent_service import IntentService
 from app.core.config import get_settings
 
@@ -129,8 +129,9 @@ class AIAgent:
         # Browser session (if product demo)
         self.browser_session: Optional[BrowserSession] = None
         
-        # Calendly service (initialized when browser session is available)
-        self.calendly: Optional[CalendlyService] = None
+        # Scheduling agent (goal-oriented, initialized when browser session is available)
+        self.scheduling_agent: Optional[SchedulingAgent] = None
+        self.awaiting_schedule_confirmation: bool = False
         
         # Demo runner (for scripted playbooks)
         self.demo_runner: Optional[DemoRunner] = None
@@ -299,22 +300,20 @@ class AIAgent:
                     }
                 )
                 
-                # Initialize Calendly service for scheduling
-                async def save_to_memory(role: str, content: str):
-                    if self.llm.memory:
-                        await self.llm.memory.add_message(role, content)
+                # Initialize Scheduling Agent (goal-oriented, works with any scheduler)
+                closing_config = getattr(self.presenter.persona, 'closing', {})
+                scheduling_config = {
+                    'goal': 'Schedule a call',
+                    'url': closing_config.get('calendly_url', ''),
+                    'founder_name': closing_config.get('founder_name', 'the team')
+                }
                 
-                # Callback to save user info to Firebase
-                async def save_user_info(name: str, email: str):
-                    if self.llm.memory:
-                        await self.llm.memory.save_user_info(name, email)
-                
-                self.calendly = CalendlyService(
+                self.scheduling_agent = SchedulingAgent(
                     browser_session=self.browser_session,
                     speak_callback=self._speak,
-                    memory_callback=save_to_memory,
-                    save_user_info_callback=save_user_info
+                    config=scheduling_config
                 )
+                self.awaiting_schedule_confirmation = False  # Simple flag for yes/no after closing
             
             # Another small delay before starting pipeline
             await asyncio.sleep(0.5)
@@ -385,6 +384,11 @@ class AIAgent:
                                 if hasattr(self, '_responding') and self._responding:
                                     self._plan_interrupted = True
                                     print("[Agent] 🛑 User spoke during response - marking interrupted", flush=True)
+                                
+                                # Also interrupt scheduling agent if it's in its VLM loop
+                                if hasattr(self, 'scheduling_agent') and self.scheduling_agent and self.scheduling_agent.is_active:
+                                    self.scheduling_agent.interrupted = True
+                                    print("[Agent] 🛑 User spoke during scheduling - marking scheduling interrupted", flush=True)
                                 
                                 # Barge-in: stop AI if it's speaking
                                 if self.is_speaking:
@@ -511,49 +515,40 @@ class AIAgent:
         try:
             print(f"[Agent] 💬 Responding to: '{user_message}'")
             
-            # === CHECK FOR CALENDLY INTERACTIONS ===
-            if self.calendly:
-                # Check for scheduling confirmation (after closing message)
-                if self.calendly.awaiting_scheduling_confirmation:
-                    is_yes = await self.intents.check_affirmative_response(user_message)
-                    if is_yes:
-                        print(f"[Agent] 📅 User confirmed scheduling, opening Calendly", flush=True)
-                        # Save user message before opening Calendly
-                        if self.llm.memory:
-                            await self.llm.memory.add_message("user", user_message)
-                        closing_config = getattr(self.presenter.persona, 'closing', {})
-                        calendly_url = closing_config.get('calendly_url', '')
-                        scheduling_message = closing_config.get('scheduling_message', 
-                            "I'm opening up the calendar now. Take a look and let me know what time works best for you!")
-                        await self.calendly.open_calendly(calendly_url, scheduling_message)
-                        return
-                    else:
-                        print(f"[Agent] 👋 User declined scheduling", flush=True)
-                        # Save user message before declining response
-                        if self.llm.memory:
-                            await self.llm.memory.add_message("user", user_message)
-                            await self.llm.memory.add_message("assistant", "No problem at all! Feel free to reach out anytime. Take care!")
-                        self.calendly.awaiting_scheduling_confirmation = False
-                        await self._speak("No problem at all! Feel free to reach out anytime. Take care!")
-                        return
-                
-                # Check for booking confirmation
-                if self.calendly.awaiting_confirmation:
-                    print(f"[Agent] 📅 Processing Calendly confirmation", flush=True)
-                    await self.calendly.handle_confirmation(user_message)
+            # === CHECK FOR SCHEDULING FLOW (Goal-Oriented Agent) ===
+            # Check if we're waiting for user to confirm they want to schedule
+            if self.awaiting_schedule_confirmation:
+                print(f"[Agent] 📅 Checking if user wants to schedule...", flush=True)
+                is_yes = await self.intents.check_affirmative_response(user_message)
+                if is_yes:
+                    print(f"[Agent] 📅 User confirmed! Starting scheduling agent", flush=True)
+                    if self.llm.memory:
+                        await self.llm.memory.add_message("user", user_message)
+                    self.awaiting_schedule_confirmation = False
+                    await self.scheduling_agent.start()
                     return
-                
-                # Check for form filling
-                if self.calendly.awaiting_info:
-                    print(f"[Agent] 📅 Processing Calendly form info", flush=True)
-                    await self.calendly.fill_form(user_message)
+                else:
+                    print(f"[Agent] 👋 User declined scheduling", flush=True)
+                    if self.llm.memory:
+                        await self.llm.memory.add_message("user", user_message)
+                        await self.llm.memory.add_message("assistant", "No problem at all! Feel free to reach out anytime. Take care!")
+                    self.awaiting_schedule_confirmation = False
+                    await self._speak("No problem at all! Feel free to reach out anytime. Take care!")
                     return
+            
+            # Check if scheduling agent is active (user is in the middle of booking)
+            if self.scheduling_agent and self.scheduling_agent.is_active:
+                print(f"[Agent] 📅 Scheduling agent active, processing turn...", flush=True)
+                if self.llm.memory:
+                    await self.llm.memory.add_message("user", user_message)
+                await self.scheduling_agent.process_turn(user_message)
                 
-                # Check for calendar interaction
-                if self.calendly.on_calendly:
-                    print(f"[Agent] 📅 On Calendly, handling scheduling interaction", flush=True)
-                    await self.calendly.handle_interaction(user_message)
-                    return
+                # Check if booking is complete
+                if self.scheduling_agent.goal_complete:
+                    print(f"[Agent] 🎉 Scheduling complete!", flush=True)
+                    if self.llm.memory:
+                        await self.llm.memory.add_message("assistant", "Booking confirmed!")
+                return
             
             # === CHECK FOR PLAYBOOK TRIGGER ===
             if self.playbook and self.browser_session:
@@ -987,15 +982,15 @@ class AIAgent:
         print(f"[Agent] 👋 Speaking closing message", flush=True)
         await self._speak(closing_message)
         
-        # Set flag to wait for scheduling confirmation (use CalendlyService if available)
-        if self.calendly:
-            self.calendly.awaiting_scheduling_confirmation = True
+        # Set flag to wait for scheduling confirmation
+        self.awaiting_schedule_confirmation = True
+        print(f"[Agent] 📅 Awaiting user response to schedule offer", flush=True)
         
         # Save to memory
         if self.llm.memory:
             await self.llm.memory.add_message("assistant", closing_message)
     
-    # NOTE: Calendly methods moved to calendly_service.py
+    # NOTE: Scheduling now handled by SchedulingAgent (goal-oriented)
     
     # =========================================================================
     # SCREEN DETECTION & CONTEXT

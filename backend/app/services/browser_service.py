@@ -146,14 +146,32 @@ class BrowserSession:
             print(f"[Browser] Smart click error: {e}", flush=True)
             return False
     
-    async def scroll(self, direction: str = "down", amount: int = 300) -> bool:
-        """Scroll the page."""
+    async def scroll(self, direction: str = "down", amount: int = 500) -> bool:
+        """
+        Scroll the page using multiple strategies.
+        Uses JavaScript scroll which is more reliable than mouse wheel.
+        """
         if not self.page:
             return False
         try:
+            # Strategy 1: JavaScript scroll on window (most reliable)
             delta = amount if direction == "down" else -amount
-            await self.page.mouse.wheel(0, delta)
-            print(f"[Browser] Scrolled {direction} by {amount}px", flush=True)
+            await self.page.evaluate(f"window.scrollBy(0, {delta})")
+            print(f"[Browser] Scrolled {direction} by {amount}px (JS window)", flush=True)
+            
+            # Strategy 2: Also try scrolling any scrollable containers
+            await self.page.evaluate(f"""
+                () => {{
+                    // Find scrollable elements and scroll them too
+                    const scrollables = document.querySelectorAll('[style*="overflow"], [class*="scroll"], main, .main, #main');
+                    scrollables.forEach(el => {{
+                        if (el.scrollHeight > el.clientHeight) {{
+                            el.scrollBy(0, {delta});
+                        }}
+                    }});
+                }}
+            """)
+            
             return True
         except Exception as e:
             print(f"[Browser] Scroll failed: {e}", flush=True)
@@ -182,6 +200,21 @@ class BrowserSession:
         except Exception as e:
             print(f"[Browser] Navigate failed: {e}", flush=True)
             return False
+    
+    async def take_screenshot(self) -> Optional[bytes]:
+        """
+        Take a screenshot of the current page.
+        Returns PNG image as bytes, or None if failed.
+        """
+        if not self.page:
+            return None
+        try:
+            screenshot = await self.page.screenshot(type="png", full_page=False)
+            print(f"[Browser] 📸 Screenshot taken ({len(screenshot)} bytes)", flush=True)
+            return screenshot
+        except Exception as e:
+            print(f"[Browser] Screenshot failed: {e}", flush=True)
+            return None
     
     async def get_page_content(self) -> dict:
         """Get page URL, title, text content, and clickable elements."""
